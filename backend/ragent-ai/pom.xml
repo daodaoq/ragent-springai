@@ -12,9 +12,14 @@
 
     <artifactId>ragent-ai</artifactId>
     <name>ragent-ai</name>
-    <description>Spring AI 集成模块（LLM / RAG / Agent）—— P2 阶段填充</description>
+    <description>Spring AI 集成模块（LLM / RAG / Agent）</description>
 
     <dependencies>
-        <!-- AI 相关依赖在 P2 阶段引入，避免 P0 启动时要求 API Key -->
+        <!-- OpenAI starter 对接 DeepSeek（DeepSeek API 与 OpenAI 兼容，只需覆盖 base-url 与模型名） -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+        <!-- 向量模型 / 向量库依赖在 P3 RAG 阶段引入 -->
     </dependencies>
 </project>

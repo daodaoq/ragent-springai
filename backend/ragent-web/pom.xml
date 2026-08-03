@@ -20,6 +20,11 @@
             <artifactId>ragent-common</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.ragent</groupId>
+            <artifactId>ragent-ai</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- Web -->
         <dependency>

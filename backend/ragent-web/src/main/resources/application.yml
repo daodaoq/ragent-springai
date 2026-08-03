@@ -6,6 +6,20 @@ server:
 spring:
   application:
     name: ragent
+  # 激活 local profile，读取 gitignored 的 application-local.yml（存放 DeepSeek API Key）
+  profiles:
+    active: local
+  # AI 对话模型：OpenAI starter 对接 DeepSeek（OpenAI 兼容协议）
+  ai:
+    model:
+      chat: openai
+    openai:
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-v4-flash
+          temperature: 0.7
   datasource:
     url: jdbc:mysql://localhost:3306/ragent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
