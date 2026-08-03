@@ -1,0 +1,42 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: ragent
+  datasource:
+    url: jdbc:mysql://localhost:3306/ragent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      # 数据库未就绪时不阻断应用启动，由 /health 反映真实状态
+      initialization-fail-timeout: -1
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 3s
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    banner: false
+    db-config:
+      # 雪花 ID
+      id-type: assign_id
+
+# Sa-Token 认证（P1 启用，P0 仅注册依赖不拦截）
+sa-token:
+  token-name: Authorization
+  token-prefix: Bearer
+  timeout: 2592000
+  is-log: false
+
+logging:
+  level:
+    com.ragent: debug

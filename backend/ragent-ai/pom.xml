@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.ragent</groupId>
+        <artifactId>ragent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>ragent-ai</artifactId>
+    <name>ragent-ai</name>
+    <description>Spring AI 集成模块（LLM / RAG / Agent）—— P2 阶段填充</description>
+
+    <dependencies>
+        <!-- AI 相关依赖在 P2 阶段引入，避免 P0 启动时要求 API Key -->
+    </dependencies>
+</project>
