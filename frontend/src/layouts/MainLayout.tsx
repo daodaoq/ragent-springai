@@ -31,6 +31,9 @@ export default function MainLayout() {
               <Link to="/ai" className="hover:text-blue-600">
                 AI 助手
               </Link>
+              <Link to="/kb" className="hover:text-blue-600">
+                知识库
+              </Link>
               {user && (
                 <Link to="/ask" className="hover:text-blue-600">
                   我要提问

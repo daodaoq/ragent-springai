@@ -68,4 +68,32 @@ CREATE TABLE IF NOT EXISTS `question_tag` (
   KEY `idx_tag_id` (`tag_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='问题-标签关联表';
 
--- 注意: 初始管理员账号由后端 AdminInitializer 在应用启动时自动创建（BCrypt 加密，避免手写哈希出错）
+-- ============================================
+-- P3 知识库表
+-- ============================================
+CREATE TABLE IF NOT EXISTS `kb_document` (
+  `id`           BIGINT       NOT NULL COMMENT '主键(雪花ID)',
+  `filename`     VARCHAR(255) NOT NULL COMMENT '文件名',
+  `content_type` VARCHAR(50)  DEFAULT NULL COMMENT '文件类型',
+  `size`         INT          NOT NULL DEFAULT 0 COMMENT '字节数',
+  `chunk_count`  INT          NOT NULL DEFAULT 0 COMMENT '切片数',
+  `status`       VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING/READY/FAILED',
+  `deleted`      TINYINT      NOT NULL DEFAULT 0,
+  `created_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文档表';
+
+CREATE TABLE IF NOT EXISTS `document_chunk` (
+  `id`           BIGINT      NOT NULL COMMENT '主键(雪花ID)',
+  `document_id`  BIGINT      NOT NULL COMMENT '所属文档',
+  `content`      MEDIUMTEXT  NOT NULL COMMENT '切片文本',
+  `chunk_index`  INT         NOT NULL DEFAULT 0 COMMENT '切片序号',
+  `vector_id`    VARCHAR(64) DEFAULT NULL COMMENT 'Qdrant point id',
+  `created_at`   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_document_id` (`document_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库切片表';
+
+-- 注意: 初始管理员账号见 sql/seed_admin.sql（一次性手动执行）

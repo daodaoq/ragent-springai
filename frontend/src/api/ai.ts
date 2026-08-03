@@ -1,17 +1,26 @@
+export interface RagSource {
+  idx: number
+  filename: string
+  excerpt: string
+}
+
+interface StreamHandlers {
+  onSources?: (sources: RagSource[]) => void
+  onContent?: (text: string) => void
+}
+
 /**
- * AI 流式对话：POST + SSE 解析（EventSource 不支持 POST，故用 fetch 读取流）
- * @param message 用户消息
- * @param onChunk 每个数据块的累积文本回调
+ * 通用 SSE 流式读取（POST + fetch reader），支持命名事件（sources / content）
  */
-export async function streamChat(message: string, onChunk: (text: string) => void): Promise<void> {
+async function streamSSE(url: string, body: unknown, handlers: StreamHandlers): Promise<void> {
   const token = localStorage.getItem('token')
-  const res = await fetch('/api/ai/chat/stream', {
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(body),
   })
   if (!res.ok || !res.body) {
     throw new Error('AI 服务不可用，请确认后端已启动')
@@ -27,19 +36,36 @@ export async function streamChat(message: string, onChunk: (text: string) => voi
     if (done) break
     buffer += decoder.decode(value, { stream: true })
 
-    // 按 SSE 帧边界 \n\n 切分，避免跨 chunk 截断
     let idx: number
     while ((idx = buffer.indexOf('\n\n')) !== -1) {
       const raw = buffer.slice(0, idx)
       buffer = buffer.slice(idx + 2)
-      const dataLine = raw.split('\n').find((l) => l.startsWith('data:'))
-      if (dataLine) {
-        const payload = dataLine.slice(5).trim()
-        if (payload) {
-          acc += payload
-          onChunk(acc)
+      const lines = raw.split('\n')
+      const event = lines.find((l) => l.startsWith('event:'))?.slice(6).trim() ?? 'content'
+      const dataLine = lines.find((l) => l.startsWith('data:'))
+      if (!dataLine) continue
+      const payload = dataLine.slice(5).trim()
+      if (!payload) continue
+      if (event === 'sources') {
+        try {
+          handlers.onSources?.(JSON.parse(payload))
+        } catch {
+          // 忽略无法解析的来源
         }
+      } else {
+        acc += payload
+        handlers.onContent?.(acc)
       }
     }
   }
+}
+
+/** 普通对话流式 */
+export async function streamChat(message: string, onContent: (text: string) => void): Promise<void> {
+  await streamSSE('/api/ai/chat/stream', { message }, { onContent })
+}
+
+/** RAG 知识库问答流式 */
+export async function streamRag(message: string, handlers: StreamHandlers): Promise<void> {
+  await streamSSE('/api/ai/rag/stream', { message }, handlers)
 }

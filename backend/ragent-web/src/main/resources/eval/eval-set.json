@@ -1,0 +1,12 @@
+[
+  {"question": "在实验室服务器上如何用 conda 创建环境并安装 GPU 版 PyTorch？", "docs": ["pytorch-setup.md"]},
+  {"question": "验证 PyTorch 是否能用 CUDA 加速的命令是什么？", "docs": ["pytorch-setup.md"]},
+  {"question": "在 Spring AI 中接入 DeepSeek 需要在 application.yml 配置哪几个关键项？", "docs": ["deepseek-config.md"]},
+  {"question": "DeepSeek 的 API Key 应该从哪里获取，格式是什么？", "docs": ["deepseek-config.md"]},
+  {"question": "反向传播算法是如何利用链式法则计算各层权重的梯度的？", "docs": ["backprop.md"]},
+  {"question": "卷积层的卷积核有什么特点，为什么能减少参数量？", "docs": ["cnn.md"]},
+  {"question": "ResNet 通过什么机制解决深层网络训练困难的问题？", "docs": ["cnn.md"]},
+  {"question": "进入人工智能实验室的基本着装要求是什么？", "docs": ["lab-safety.md"]},
+  {"question": "发现实验室设备冒烟应该如何处理？", "docs": ["lab-safety.md"]},
+  {"question": "实验室服务器账号有什么使用规定？", "docs": ["lab-safety.md"]}
+]
