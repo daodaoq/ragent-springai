@@ -88,7 +88,7 @@ public class StructuredExtractor {
         }
         sb.append("\n请输出 JSON 对象，各字段说明：\n");
         if (needed.contains("intent")) {
-            sb.append("\"intent\": 枚举之一 RAG(知识库相关问题)/CHAT(闲聊寒暄)/OTHER(其他)，只取一个\n");
+            sb.append("\"intent\": 枚举之一 RAG(知识库相关问题)/AGENT(需要查题库、统计、标签等真实数据的工具类问题)/CHAT(闲聊寒暄)/OTHER(其他)，只取一个\n");
         }
         if (needed.contains("rewrittenQuery")) {
             sb.append("\"rewrittenQuery\": 独立完整、术语展开、适合向量与关键词检索的长查询字符串；若依赖历史，请把指代补全\n");

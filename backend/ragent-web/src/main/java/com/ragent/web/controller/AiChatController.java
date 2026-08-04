@@ -3,6 +3,7 @@ package com.ragent.web.controller;
 import cn.dev33.satoken.stp.StpUtil;
 import com.ragent.common.result.Result;
 import com.ragent.web.service.AgentService;
+import com.ragent.web.service.UnifiedChatService;
 import com.ragent.ai.service.ChatMemoryService;
 import com.ragent.ai.service.ChatService;
 import com.ragent.ai.service.RagService;
@@ -28,8 +29,16 @@ public class AiChatController {
     private final RagService ragService;
     private final AgentService agentService;
     private final ChatMemoryService chatMemoryService;
+    private final UnifiedChatService unifiedChatService;
 
-    /** 普通对话流式（P5 起带多轮记忆） */
+    /** 统一对话流式（自动路由 RAG/Agent/普通对话）：先 mode 事件，再对应引擎事件。前端主入口。 */
+    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> stream(@RequestBody ChatRequest request) {
+        return unifiedChatService.stream(request.message() == null ? "" : request.message(),
+                request.conversationId(), currentUserId());
+    }
+
+    /** 普通对话流式（P5 起带多轮记忆；保留向后兼容） */
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> chatStream(@RequestBody ChatRequest request) {
         return chatService.stream(request.message() == null ? "" : request.message(), request.conversationId());

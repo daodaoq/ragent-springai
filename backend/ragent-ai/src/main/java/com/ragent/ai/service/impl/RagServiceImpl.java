@@ -116,9 +116,17 @@ public class RagServiceImpl implements RagService {
 
     @Override
     public Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId) {
+        return ragStream(question, conversationId, userId, null);
+    }
+
+    @Override
+    public Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId,
+                                                   QueryPipeline.ProcessedQuery precomputed) {
         long start = System.nanoTime();
         List<ChatMemoryService.ChatMessage> history = chatMemoryService.load(conversationId);
-        QueryPipeline.ProcessedQuery pq = queryPipeline.run(question, history, true);
+        // 统一对话路由已算过一次管线产物时复用（precomputed），否则按原逻辑自己跑（gateByIntent=true）
+        QueryPipeline.ProcessedQuery pq = precomputed != null
+                ? precomputed : queryPipeline.run(question, history, true);
         if (pq.gated()) {
             // 意图门禁命中：非知识库问题，不检索，只给提示
             recordQuery(userId, conversationId, question, pq, true, null, NON_RAG_HINT,

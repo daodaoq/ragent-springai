@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { clearMemory, streamAgent, streamChat, streamRag, type RagSource, type RewrittenInfo } from '../api/ai'
+import { clearMemory, streamUnified, type RagSource, type RewrittenInfo } from '../api/ai'
 import http from '../api/http'
 import { getDocumentSource, type KbDocumentSource } from '../api/kb'
 import Markdown from '../components/Markdown'
 import type { ToolCallInfo } from '../types'
-
-type Mode = 'chat' | 'rag' | 'agent'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -14,23 +12,24 @@ interface Message {
   tools?: ToolCallInfo[]
   /** P6 查询处理管线轨迹（改写后查询 + 各阶段） */
   rewritten?: RewrittenInfo
+  /** 统一对话引擎标记（mode 事件）：rag / chat / agent */
+  engine?: 'rag' | 'chat' | 'agent'
 }
 
-const WELCOME: Record<Mode, string> = {
-  chat: '你好！我是人工智能实验室的 AI 助手 👋\n\n可以帮你解答深度学习、机器学习、实验环境配置等问题。',
-  rag: '切换到「知识库问答」模式后，我会从实验室知识库检索资料并给出带引用来源的回答。',
-  agent: '切换到「Agent 智能体」模式后，我可以直接查询题库、统计提问、查标签，用真实数据回答你。\n\n试试问我：**查一下题库里深度学习相关的提问**',
+const ENGINE_LABEL: Record<NonNullable<Message['engine']>, string> = {
+  rag: '📚 知识库检索',
+  chat: '💬 对话',
+  agent: '🤖 智能体工具',
 }
 
-const PLACEHOLDER: Record<Mode, string> = {
-  chat: '输入你的问题，回车发送（Shift+Enter 换行）',
-  rag: '问一个知识库相关的问题，如：如何配置 DeepSeek？',
-  agent: '试试：查一下题库里深度学习相关的提问',
-}
+const WELCOME =
+  '你好！我是人工智能实验室的 AI 助手 👋\n\n我可以：\n- 📚 从实验室知识库检索资料回答你的问题（带引用来源）\n- 🤖 直接查询题库、统计提问、查标签，用真实数据回答\n- 💬 陪你随便聊聊\n\n直接问就行，我会自动判断用哪种方式回答你。'
 
-const CONV_KEY_PREFIX = 'conv:'
+const PLACEHOLDER = '输入你的问题，回车发送（Shift+Enter 换行），如：如何配置 DeepSeek？'
 
-/** 每模式独立的会话 ID（localStorage 持久化，仅前端记录，后端记忆按 ID 存取） */
+const CONV_KEY = 'conv'
+
+/** 会话 ID（localStorage 持久化，仅前端记录，后端记忆按 ID 存取） */
 function genId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
@@ -38,20 +37,18 @@ function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2)
 }
 
-function loadConvId(mode: Mode): string {
-  const key = CONV_KEY_PREFIX + mode
-  let id = localStorage.getItem(key)
+function loadConvId(): string {
+  let id = localStorage.getItem(CONV_KEY)
   if (!id) {
     id = genId()
-    localStorage.setItem(key, id)
+    localStorage.setItem(CONV_KEY, id)
   }
   return id
 }
 
 export default function ChatPage() {
-  const [mode, setMode] = useState<Mode>('rag')
-  const [convId, setConvId] = useState<string>(() => loadConvId('rag'))
-  const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: WELCOME[mode] }])
+  const [convId, setConvId] = useState<string>(() => loadConvId())
+  const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: WELCOME }])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   /** 每条助手消息的赞/踩选中态（key = 消息下标） */
@@ -69,14 +66,6 @@ export default function ChatPage() {
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  const switchMode = (m: Mode) => {
-    if (m === mode || streaming) return
-    setMode(m)
-    setConvId(loadConvId(m))
-    setMessages([{ role: 'assistant', content: WELCOME[m] }])
-    setFeedback({})
-  }
 
   const openSourceDetail = (s: RagSource) => {
     setSourceDetail(s)
@@ -110,9 +99,9 @@ export default function ChatPage() {
     if (streaming) return
     clearMemory(convId).catch(() => {})
     const id = genId()
-    localStorage.setItem(CONV_KEY_PREFIX + mode, id)
+    localStorage.setItem(CONV_KEY, id)
     setConvId(id)
-    setMessages([{ role: 'assistant', content: WELCOME[mode] }])
+    setMessages([{ role: 'assistant', content: WELCOME }])
     setFeedback({})
   }
 
@@ -132,20 +121,13 @@ export default function ChatPage() {
     setInput('')
     setStreaming(true)
     try {
-      if (mode === 'rag') {
-        await streamRag(text, convId, {
-          onSources: (sources) => updateLast({ sources }),
-          onContent: (acc) => updateLast({ content: acc }),
-          onRewritten: (info) => updateLast({ rewritten: info }),
-        })
-      } else if (mode === 'agent') {
-        await streamAgent(text, convId, {
-          onToolCall: (t) => updateLast((prev) => ({ tools: [...(prev.tools ?? []), t] })),
-          onContent: (acc) => updateLast({ content: acc }),
-        })
-      } else {
-        await streamChat(text, convId, (acc) => updateLast({ content: acc }))
-      }
+      await streamUnified(text, convId, {
+        onMode: (m) => updateLast({ engine: (m as Message['engine']) ?? undefined }),
+        onSources: (sources) => updateLast({ sources }),
+        onContent: (acc) => updateLast({ content: acc }),
+        onRewritten: (info) => updateLast({ rewritten: info }),
+        onToolCall: (t) => updateLast((prev) => ({ tools: [...(prev.tools ?? []), t] })),
+      })
     } catch (e) {
       updateLast({ content: '⚠️ ' + (e instanceof Error ? e.message : '连接失败') })
     } finally {
@@ -178,12 +160,6 @@ export default function ChatPage() {
     }
   }
 
-  const modeBtns: { key: Mode; label: string }[] = [
-    { key: 'rag', label: '知识库问答' },
-    { key: 'chat', label: '普通对话' },
-    { key: 'agent', label: 'Agent 智能体' },
-  ]
-
   return (
     <div className="flex flex-col h-[calc(100vh-120px)]">
       <div className="flex items-center justify-between mb-4">
@@ -196,17 +172,6 @@ export default function ChatPage() {
           >
             🗑️ 清空对话
           </button>
-          <div className="flex rounded-lg border border-slate-300 overflow-hidden text-sm">
-            {modeBtns.map(({ key, label }) => (
-              <button
-                key={key}
-                onClick={() => switchMode(key)}
-                className={`px-3 py-1.5 ${mode === key ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -220,6 +185,9 @@ export default function ChatPage() {
             </div>
           ) : (
             <div key={i} className="space-y-2">
+              {msg.engine && msg.content && (
+                <div className="ml-2 text-[11px] text-slate-400">{ENGINE_LABEL[msg.engine]}</div>
+              )}
               <div className="flex justify-start">
                 <div className="max-w-[85%] bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-4 py-2.5">
                   {msg.content ? (
@@ -322,7 +290,7 @@ export default function ChatPage() {
         <textarea
           className="flex-1 border border-slate-300 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
           rows={2}
-          placeholder={PLACEHOLDER[mode]}
+          placeholder={PLACEHOLDER}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {

@@ -35,6 +35,14 @@ public interface RagService {
      */
     Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId);
 
+    /**
+     * RAG 流式接口（复用已算好的查询处理结果）：统一对话路由场景下，意图/改写已在
+     * UnifiedChatService 算过一次，传入 precomputed 避免管线跑两次（两次 LLM）。
+     * precomputed 为 null 时等价于 {@link #ragStream(String, String, Long)}。
+     */
+    Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId,
+                                            QueryPipeline.ProcessedQuery precomputed);
+
     record SourceItem(int idx, String filename, String excerpt, Double score,
                       String headingPath, Integer lineStart, Integer lineEnd, Integer page,
                       String documentId, String content) {

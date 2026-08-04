@@ -32,6 +32,8 @@ interface StreamHandlers {
   onContent?: (text: string) => void
   onToolCall?: (tool: ToolCallInfo) => void
   onRewritten?: (info: RewrittenInfo) => void
+  /** 统一对话 mode 事件：rag / chat / agent */
+  onMode?: (mode: string) => void
 }
 
 /**
@@ -90,6 +92,12 @@ async function streamSSE(url: string, body: unknown, handlers: StreamHandlers): 
         } catch {
           // 忽略无法解析的改写信息
         }
+      } else if (event === 'mode') {
+        try {
+          handlers.onMode?.(JSON.parse(payload) as string)
+        } catch {
+          // 忽略无法解析的引擎标记
+        }
       } else {
         acc += payload
         handlers.onContent?.(acc)
@@ -116,13 +124,22 @@ export async function streamRag(
   await streamSSE('/api/ai/rag/stream', { message, conversationId }, handlers)
 }
 
-/** Agent 智能体流式（tool-call 事件 + 最终 content） */
+/** Agent 智能体流式（tool-call 事件 + 最终 content；保留向后兼容） */
 export async function streamAgent(
   message: string,
   conversationId: string,
   handlers: StreamHandlers,
 ): Promise<void> {
   await streamSSE('/api/ai/agent/stream', { message, conversationId }, handlers)
+}
+
+/** 统一对话流式（自动路由 RAG/Agent/普通对话）：先 mode 事件，再对应引擎事件 */
+export async function streamUnified(
+  message: string,
+  conversationId: string,
+  handlers: StreamHandlers,
+): Promise<void> {
+  await streamSSE('/api/ai/stream', { message, conversationId }, handlers)
 }
 
 /** 清空某会话的多轮记忆 */
