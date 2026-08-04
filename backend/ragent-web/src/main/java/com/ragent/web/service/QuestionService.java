@@ -55,13 +55,19 @@ public class QuestionService {
     }
 
     public QuestionVO detail(Long id) {
+        QuestionVO vo = detailReadOnly(id);
+        questionMapper.update(null, new LambdaUpdateWrapper<Question>()
+                .eq(Question::getId, id)
+                .setSql("view_count = view_count + 1"));
+        return vo;
+    }
+
+    /** 只读详情（不自增浏览数），供 Agent 工具调用 */
+    public QuestionVO detailReadOnly(Long id) {
         Question question = questionMapper.selectById(id);
         if (question == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "问题不存在");
         }
-        questionMapper.update(null, new LambdaUpdateWrapper<Question>()
-                .eq(Question::getId, id)
-                .setSql("view_count = view_count + 1"));
         return toDetailVO(question);
     }
 

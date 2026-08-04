@@ -7,6 +7,7 @@ import QuestionDetailPage from '../pages/QuestionDetailPage'
 import AskPage from '../pages/AskPage'
 import ChatPage from '../pages/ChatPage'
 import KnowledgeBasePage from '../pages/KnowledgeBasePage'
+import DashboardPage from '../pages/DashboardPage'
 
 export default function AppRouter() {
   return (
@@ -18,6 +19,7 @@ export default function AppRouter() {
           <Route path="/ask" element={<AskPage />} />
           <Route path="/ai" element={<ChatPage />} />
           <Route path="/kb" element={<KnowledgeBasePage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
         </Route>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />

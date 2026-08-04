@@ -96,4 +96,19 @@ CREATE TABLE IF NOT EXISTS `document_chunk` (
   KEY `idx_document_id` (`document_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库切片表';
 
+-- ============================================
+-- P5: AI 回答反馈表（赞/踩）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `ai_feedback` (
+  `id`              BIGINT      NOT NULL COMMENT '主键(雪花ID)',
+  `user_id`         BIGINT      DEFAULT NULL COMMENT '评价用户(可能未登录)',
+  `conversation_id` VARCHAR(64) DEFAULT NULL COMMENT '会话ID',
+  `question`        TEXT        COMMENT '用户问题',
+  `answer`          MEDIUMTEXT  COMMENT 'AI 回答',
+  `rating`          TINYINT     NOT NULL COMMENT '1 赞 / -1 踩',
+  `created_at`      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 回答反馈表';
+
 -- 注意: 初始管理员账号见 sql/seed_admin.sql（一次性手动执行）

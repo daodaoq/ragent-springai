@@ -35,6 +35,14 @@ public class TagService {
         return tagMapper.selectBatchIds(tagIds);
     }
 
+    /** 按名称查标签（纯读，不存在返回 null），供 Agent 工具调用 */
+    public Tag findByName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        return tagMapper.selectOne(new LambdaQueryWrapper<Tag>().eq(Tag::getName, name.trim()));
+    }
+
     /** 确保标签存在（不存在则创建），返回 tagId 列表 */
     public List<Long> ensureTags(List<String> names) {
         List<Long> ids = new ArrayList<>();

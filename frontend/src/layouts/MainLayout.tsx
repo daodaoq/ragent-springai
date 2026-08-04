@@ -35,6 +35,11 @@ export default function MainLayout() {
                 知识库
               </Link>
               {user && (
+                <Link to="/dashboard" className="hover:text-blue-600">
+                  数据看板
+                </Link>
+              )}
+              {user && (
                 <Link to="/ask" className="hover:text-blue-600">
                   我要提问
                 </Link>
