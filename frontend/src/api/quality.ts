@@ -61,6 +61,21 @@ export const getQualityReport = (docId?: string) =>
     params: docId ? { docId } : {},
   }) as Promise<ApiResult<ChunkQualityReport>>
 
+// ---------------- 查询处理管线编排（/kb/query/stages，A-G 阶段启停/排序） ----------------
+
+export interface QueryStageConfig {
+  name: string
+  description: string
+  enabled: boolean
+  sortOrder: number
+}
+
+export const getQueryStages = () =>
+  http.get('/kb/query/stages') as Promise<ApiResult<QueryStageConfig[]>>
+
+export const saveQueryStages = (list: QueryStageConfig[]) =>
+  http.put('/kb/query/stages', list) as Promise<ApiResult<null>>
+
 // ---------------- 复用现有 RAG 评测（/api/eval/run） ----------------
 
 export interface EvalRetrievalMetrics {
@@ -95,5 +110,9 @@ export interface EvalReport {
   cases: EvalCaseResult[]
 }
 
-/** 运行内置 RAG 评测（同步较慢：会真实检索+LLM 打分 10 个用例） */
-export const runEval = () => http.post('/eval/run') as Promise<ApiResult<EvalReport>>
+/**
+ * 运行内置 RAG 评测（同步较慢：会真实检索+LLM 打分 10 个用例，单次可能 >15s，故放宽超时）。
+ * params.processed=true 走查询处理管线（默认），false 为原样检索基线（A/B 用）。
+ */
+export const runEval = (params?: { processed?: boolean }) =>
+  http.post('/eval/run', params, { timeout: 120000 }) as Promise<ApiResult<EvalReport>>

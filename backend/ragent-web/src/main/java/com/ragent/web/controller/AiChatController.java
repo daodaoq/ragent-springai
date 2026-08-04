@@ -34,10 +34,10 @@ public class AiChatController {
         return chatService.stream(request.message() == null ? "" : request.message(), request.conversationId());
     }
 
-    /** RAG 知识库问答流式（先 sources 事件，再 content 事件；无状态） */
+    /** RAG 知识库问答流式（P6 起带多轮记忆：先 rewritten 事件，再 sources，再 content） */
     @PostMapping(value = "/rag/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> ragStream(@RequestBody ChatRequest request) {
-        return ragService.ragStream(request.message() == null ? "" : request.message());
+        return ragService.ragStream(request.message() == null ? "" : request.message(), request.conversationId());
     }
 
     /** Agent 智能体流式（工具调用事件 tool-call + 最终答案 content） */

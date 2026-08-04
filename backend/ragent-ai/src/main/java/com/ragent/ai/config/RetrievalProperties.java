@@ -37,4 +37,13 @@ public class RetrievalProperties {
 
     /** DashScope Key；占位符在 application.yml 中解析（默认复用 embedding key） */
     private String rerankApiKey = "";
+
+    /** 查询处理主开关（A-G 管线）：false 只做 A 规范化 + 原样检索；阶段启停/顺序走 DB kb_query_stage */
+    private boolean queryProcessingEnabled = true;
+
+    /** D 多查询变体数量上限 */
+    private int multiQueryCount = 3;
+
+    /** F 喂给改写的最近用户轮数 */
+    private int contextTurnCount = 3;
 }

@@ -132,4 +132,17 @@ CREATE TABLE IF NOT EXISTS `ai_feedback` (
   KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 回答反馈表';
 
+-- ============================================
+-- P6: 查询处理管线阶段配置（前端编排页可勾选/排序）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `kb_query_stage` (
+  `id`         BIGINT      NOT NULL COMMENT '主键(雪花ID)',
+  `name`       VARCHAR(50) NOT NULL COMMENT '阶段名: context/normalize/intent/rewrite/multiQuery/hyde/entity',
+  `enabled`    TINYINT     NOT NULL DEFAULT 1 COMMENT '启用: 0否 1是',
+  `sort_order` INT         NOT NULL DEFAULT 0 COMMENT '执行顺序(越小越先)',
+  `updated_at` DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='查询处理管线阶段配置';
+
 -- 注意: 初始管理员账号见 sql/seed_admin.sql（一次性手动执行）

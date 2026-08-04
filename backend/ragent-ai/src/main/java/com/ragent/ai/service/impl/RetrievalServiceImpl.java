@@ -8,10 +8,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,6 +21,7 @@ import java.util.regex.Pattern;
 
 /**
  * P4 混合检索实现：向量（Qdrant） + 关键词（MySQL FULLTEXT ngram）→ RRF 融合 → DashScope 重排。
+ * P6 扩展：支持多路查询（多查询/HyDE 变体各自检索）与实体过滤（filename/page）。
  * 每个阶段独立兜底：关键词失败→仅向量；重排失败→用融合结果；向量失败→空列表（不抛给调用方）。
  */
 @Slf4j
@@ -44,17 +46,34 @@ public class RetrievalServiceImpl implements RetrievalService {
 
     @Override
     public List<Document> retrieve(String question, int topK) {
-        List<Document> dense = denseSearch(question, props.getDenseTopN());
-        List<Document> keyword = props.isKeywordEnabled()
-                ? keywordSearch(question, props.getKeywordTopN())
-                : List.of();
+        return retrieve(RetrievalQuery.single(question), topK);
+    }
 
-        List<Document> fused = rrfFuse(dense, keyword, props.getRrfK(), props.getRerankTopN());
+    @Override
+    public List<Document> retrieve(RetrievalQuery rq, int topK) {
+        // 多路稠密：每路一个查询 → 一路 ranked list；多路关键词同理
+        List<List<Document>> ranked = new ArrayList<>();
+        for (String q : rq.denseQueries()) {
+            List<Document> d = denseSearch(q, props.getDenseTopN(), rq.filter());
+            if (!d.isEmpty()) {
+                ranked.add(d);
+            }
+        }
+        if (props.isKeywordEnabled()) {
+            for (String q : rq.keywordQueries()) {
+                List<Document> k = keywordSearch(q, props.getKeywordTopN(), rq.filter());
+                if (!k.isEmpty()) {
+                    ranked.add(k);
+                }
+            }
+        }
+
+        List<Document> fused = rrfFuse(ranked, props.getRrfK(), props.getRerankTopN());
         if (!props.isRerankEnabled() || fused.isEmpty()) {
             return truncate(fused, topK);
         }
         try {
-            return rerankClient.rerank(question, fused, topK);
+            return rerankClient.rerank(rq.rerankQuery(), fused, topK);
         } catch (Exception e) {
             log.warn("重排失败，回退 RRF 融合结果: {}", e.getMessage());
             return truncate(fused, topK);
@@ -63,23 +82,52 @@ public class RetrievalServiceImpl implements RetrievalService {
 
     // ---------- 各阶段 ----------
 
-    private List<Document> denseSearch(String q, int n) {
+    private List<Document> denseSearch(String q, int n, RetrievalService.EntityHint filter) {
         try {
+            Filter.Expression expr = buildFilter(filter);
+            if (expr == null) {
+                return vectorStore.similaritySearch(SearchRequest.builder().query(q).topK(n).build());
+            }
             return vectorStore.similaritySearch(
-                    SearchRequest.builder().query(q).topK(n).build());
+                    SearchRequest.builder().query(q).topK(n).filterExpression(expr).build());
         } catch (Exception e) {
-            log.warn("向量检索失败，返回空: {}", e.getMessage());
-            return List.of();
+            log.warn("向量检索失败，回退无过滤重试: {}", e.getMessage());
+            try {
+                return vectorStore.similaritySearch(SearchRequest.builder().query(q).topK(n).build());
+            } catch (Exception e2) {
+                log.warn("向量检索失败，返回空: {}", e2.getMessage());
+                return List.of();
+            }
         }
     }
 
-    private List<Document> keywordSearch(String q, int n) {
+    /** 实体过滤 → Qdrant Filter.Expression（filename 优先；page 兜底）。构建失败返回 null（无过滤）。 */
+    private Filter.Expression buildFilter(RetrievalService.EntityHint filter) {
+        if (filter == null) {
+            return null;
+        }
+        try {
+            FilterExpressionBuilder b = new FilterExpressionBuilder();
+            if (filter.filename() != null && !filter.filename().isBlank()) {
+                return b.eq("filename", filter.filename()).build();
+            }
+            if (filter.page() != null) {
+                return b.eq("page", filter.page()).build();
+            }
+        } catch (Exception e) {
+            log.warn("构建过滤条件失败，回退无过滤: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    private List<Document> keywordSearch(String q, int n, RetrievalService.EntityHint filter) {
         String kw = sanitizeKeyword(q);
         if (kw.isBlank()) {
             return List.of();
         }
+        String filename = filter == null ? null : filter.filename();
         try {
-            return chunkMapper.keywordSearch(kw, n).stream()
+            return chunkMapper.keywordSearch(kw, n, filename).stream()
                     .map(this::toDocument)
                     .toList();
         } catch (Exception e) {
@@ -110,35 +158,37 @@ public class RetrievalServiceImpl implements RetrievalService {
 
     // ---------- RRF 融合 ----------
 
-    /** 去重键 = Document.getId()（= Qdrant point id / vector_id），dense 优先保留。 */
-    private List<Document> rrfFuse(List<Document> dense, List<Document> keyword, int k, int topN) {
+    /**
+     * 多路 RRF 融合：每路按 rank 计分 1/(k+rank)，按 Document.getId() 去重（靠前列表优先保留），
+     * 分数归一化到 (0,1]。路数可为 0（返回空）。
+     */
+    private List<Document> rrfFuse(List<List<Document>> rankedLists, int k, int topN) {
         Map<String, Double> scores = new HashMap<>();
-        addRanks(dense, scores, k);
-        addRanks(keyword, scores, k);
+        for (List<Document> list : rankedLists) {
+            int rank = 1;
+            for (Document d : list) {
+                scores.merge(d.getId(), 1.0 / (k + rank), Double::sum);
+                rank++;
+            }
+        }
 
         Map<String, Document> best = new LinkedHashMap<>();
-        for (Document d : dense) {
-            best.putIfAbsent(d.getId(), d);
-        }
-        for (Document d : keyword) {
-            best.putIfAbsent(d.getId(), d);
+        for (List<Document> list : rankedLists) {
+            for (Document d : list) {
+                best.putIfAbsent(d.getId(), d);
+            }
         }
 
+        if (best.isEmpty()) {
+            return List.of();
+        }
         double max = scores.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
         return best.entrySet().stream()
-                .sorted(Comparator.<Map.Entry<String, Document>>comparingDouble(
+                .sorted(java.util.Comparator.<Map.Entry<String, Document>>comparingDouble(
                         e -> scores.get(e.getKey())).reversed())
                 .limit(topN)
                 .map(e -> e.getValue().mutate().score(scores.get(e.getKey()) / max).build())
                 .toList();
-    }
-
-    private void addRanks(List<Document> list, Map<String, Double> scores, int k) {
-        int rank = 1;
-        for (Document d : list) {
-            scores.merge(d.getId(), 1.0 / (k + rank), Double::sum);
-            rank++;
-        }
     }
 
     private static List<Document> truncate(List<Document> list, int topK) {

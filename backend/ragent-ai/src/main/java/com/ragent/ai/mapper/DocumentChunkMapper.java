@@ -22,10 +22,17 @@ public interface DocumentChunkMapper extends BaseMapper<DocumentChunk> {
             FROM document_chunk dc
             JOIN kb_document d ON d.id = dc.document_id AND d.deleted = 0 AND d.status = 'READY'
             WHERE MATCH(dc.content) AGAINST(#{keyword} IN BOOLEAN MODE)
+              AND (#{filename} IS NULL OR d.filename = #{filename})
             ORDER BY relevance DESC
             LIMIT #{limit}
             """)
-    List<KeywordRow> keywordSearch(@Param("keyword") String keyword, @Param("limit") int limit);
+    List<KeywordRow> keywordSearch(@Param("keyword") String keyword, @Param("limit") int limit,
+                                   @Param("filename") String filename);
+
+    /** 全库关键词检索（filename 过滤缺省） */
+    default List<KeywordRow> keywordSearch(String keyword, int limit) {
+        return keywordSearch(keyword, limit, null);
+    }
 
     /**
      * 关键词命中行。列名与 record 组件通过 map-underscore-to-camel-case 自动映射

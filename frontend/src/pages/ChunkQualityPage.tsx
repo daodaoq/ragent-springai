@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import { useChart } from '../components/useChart'
-import { getChunkSettings, getQualityReport, runEval, updateChunkSettings } from '../api/quality'
+import {
+  getChunkSettings,
+  getQualityReport,
+  getQueryStages,
+  runEval,
+  saveQueryStages,
+  updateChunkSettings,
+} from '../api/quality'
 import type {
   ChunkQualityReport,
   ChunkSettings,
   DocQuality,
   EvalReport,
   QualityBucket,
+  QueryStageConfig,
 } from '../api/quality'
 import { rechunkDocument } from '../api/kb'
 import type { ChunkParams } from '../api/kb'
@@ -52,11 +60,20 @@ export default function ChunkQualityPage() {
   const [settingsMsg, setSettingsMsg] = useState('')
 
   const [rechunk, setRechunk] = useState<RechunkState | null>(null)
-  const [evalState, setEvalState] = useState<{ running: boolean; result: EvalReport | null; error: string }>({
-    running: false,
-    result: null,
-    error: '',
-  })
+
+  /** 查询处理管线编排（A-G 阶段启停/排序） */
+  const [stages, setStages] = useState<QueryStageConfig[]>([])
+  const [stageSaving, setStageSaving] = useState(false)
+  const [stageMsg, setStageMsg] = useState('')
+
+  /** RAG 评测：A/B 两路结果（off=原样检索基线，on=查询处理管线） */
+  const [evalProcessed, setEvalProcessed] = useState(true)
+  const [evalCompare, setEvalCompare] = useState<{
+    off: EvalReport | null
+    on: EvalReport | null
+    running: 'off' | 'on' | 'both' | null
+    error: string
+  }>({ off: null, on: null, running: null, error: '' })
 
   const histRef = useRef<HTMLDivElement>(null)
   useChart(histRef, report?.lengthBuckets, buildHistogramOption)
@@ -77,6 +94,13 @@ export default function ChunkQualityPage() {
       setError(e instanceof Error ? e.message : '加载失败')
     } finally {
       setLoading(false)
+    }
+    // 管线编排独立加载：失败不影响主页面
+    try {
+      const st = await getQueryStages()
+      setStages(st.data)
+    } catch {
+      // 忽略：编排卡显示为空
     }
   }
 
@@ -149,15 +173,85 @@ export default function ChunkQualityPage() {
     }
   }
 
-  const runRagEval = async () => {
-    setEvalState({ running: true, result: null, error: '' })
+  // ==================== 查询处理管线编排 ====================
+
+  const toggleStage = (i: number) => {
+    setStages((prev) => prev.map((s, idx) => (idx === i ? { ...s, enabled: !s.enabled } : s)))
+  }
+
+  const moveStage = (i: number, dir: -1 | 1) => {
+    setStages((prev) => {
+      const j = i + dir
+      if (j < 0 || j >= prev.length) return prev
+      const copy = [...prev]
+      const tmp = copy[i]
+      copy[i] = copy[j]
+      copy[j] = tmp
+      return copy
+    })
+  }
+
+  const saveStages = async () => {
+    setStageSaving(true)
+    setStageMsg('')
     try {
-      const res = await runEval()
-      setEvalState({ running: false, result: res.data, error: '' })
+      await saveQueryStages(stages.map((s, i) => ({ ...s, sortOrder: (i + 1) * 10 })))
+      setStageMsg('✅ 已保存，立即生效（无需重启）')
     } catch (e) {
-      setEvalState({ running: false, result: null, error: e instanceof Error ? e.message : '评测失败' })
+      setStageMsg('⚠️ ' + (e instanceof Error ? e.message : '保存失败'))
+    } finally {
+      setStageSaving(false)
     }
   }
+
+  // ==================== RAG 评测（A/B） ====================
+
+  const runEvalOnce = async (processed: boolean): Promise<EvalReport> => {
+    const res = await runEval({ processed })
+    return res.data
+  }
+
+  /** 按当前开关跑一次评测 */
+  const runEval = async () => {
+    const key = evalProcessed ? 'on' : 'off'
+    setEvalCompare((s) => ({ ...s, running: key, error: '', [key]: null }))
+    try {
+      const rep = await runEvalOnce(evalProcessed)
+      setEvalCompare((s) => ({ ...s, running: null, [key]: rep }))
+    } catch (e) {
+      setEvalCompare((s) => ({
+        ...s,
+        running: null,
+        error: e instanceof Error ? e.message : '评测失败',
+      }))
+    }
+  }
+
+  /** A/B 对比：连续跑 原样 与 查询处理 两路，并排展示 */
+  const runEvalAB = async () => {
+    setEvalCompare((s) => ({ ...s, running: 'both', error: '', off: null, on: null }))
+    try {
+      const off = await runEvalOnce(false)
+      const on = await runEvalOnce(true)
+      setEvalCompare({ off, on, running: null, error: '' })
+    } catch (e) {
+      setEvalCompare((s) => ({
+        ...s,
+        running: null,
+        error: e instanceof Error ? e.message : 'A/B 评测失败',
+      }))
+    }
+  }
+
+  const evalMetricRows = [
+    { label: 'Recall@5', off: evalCompare.off?.retrieval.recallAt5, on: evalCompare.on?.retrieval.recallAt5 },
+    { label: 'Precision@5', off: evalCompare.off?.retrieval.precisionAt5, on: evalCompare.on?.retrieval.precisionAt5 },
+    { label: 'MRR@5', off: evalCompare.off?.retrieval.mrrAt5, on: evalCompare.on?.retrieval.mrrAt5 },
+    { label: 'NDCG@5', off: evalCompare.off?.retrieval.ndcgAt5, on: evalCompare.on?.retrieval.ndcgAt5 },
+    { label: '忠实度', off: evalCompare.off?.answer.avgFaithfulness, on: evalCompare.on?.answer.avgFaithfulness },
+    { label: '相关性', off: evalCompare.off?.answer.avgRelevance, on: evalCompare.on?.answer.avgRelevance },
+    { label: '引用率', off: evalCompare.off?.answer.citationRate, on: evalCompare.on?.answer.citationRate },
+  ]
 
   const effMax = (d: DocQuality) => (d.maxChunkChars != null ? d.maxChunkChars : settings?.maxChunkChars)
   const effSemantic = (d: DocQuality) =>
@@ -332,33 +426,131 @@ export default function ChunkQualityPage() {
             </div>
           </div>
 
+          {/* 查询处理管线编排 */}
+          <div className="bg-white border border-slate-200 rounded-xl p-4 mb-5">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="font-bold text-slate-800">🔧 查询处理管线编排</h2>
+              <div className="flex items-center gap-3">
+                {stageMsg && <span className="text-xs text-slate-500">{stageMsg}</span>}
+                <button
+                  onClick={saveStages}
+                  disabled={stageSaving || stages.length === 0}
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {stageSaving ? '保存中…' : '保存'}
+                </button>
+              </div>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">
+              检索前的 A-G 优化流程：可独立启停、调整顺序，保存后立即生效（无需重启）。↓ 决定下一次 RAG 检索的管线。
+            </p>
+            {stages.length === 0 ? (
+              <div className="text-sm text-slate-400 py-4 text-center">管线配置加载失败或为空</div>
+            ) : (
+              <div className="space-y-2">
+                {stages.map((s, i) => (
+                  <div
+                    key={s.name}
+                    className={`flex items-center gap-3 border rounded-lg px-3 py-2 ${
+                      s.enabled ? 'border-slate-200' : 'border-slate-100 opacity-50'
+                    }`}
+                  >
+                    <div className="flex flex-col text-slate-400">
+                      <button
+                        onClick={() => moveStage(i, -1)}
+                        disabled={i === 0}
+                        className="text-xs leading-none hover:text-blue-600 disabled:opacity-30"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        onClick={() => moveStage(i, 1)}
+                        disabled={i === stages.length - 1}
+                        className="text-xs leading-none mt-1 hover:text-blue-600 disabled:opacity-30"
+                      >
+                        ↓
+                      </button>
+                    </div>
+                    <span className="text-xs font-mono text-slate-400 w-5">{i + 1}</span>
+                    <label className="flex items-center gap-2 flex-1 min-w-0 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="accent-blue-600"
+                        checked={s.enabled}
+                        onChange={() => toggleStage(i)}
+                      />
+                      <span className={`text-sm font-medium ${s.enabled ? 'text-slate-800' : 'text-slate-400'}`}>
+                        {s.name}
+                      </span>
+                      <span className="text-xs text-slate-400 truncate">{s.description}</span>
+                    </label>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* RAG 评测 */}
           <div className="bg-white border border-slate-200 rounded-xl p-4 mb-5">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
               <h2 className="font-bold text-slate-800">🧪 RAG 检索/回答评测</h2>
-              <button
-                onClick={runRagEval}
-                disabled={evalState.running}
-                className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 disabled:opacity-60"
-              >
-                {evalState.running ? '评测中（约 10 用例）…' : '运行评测'}
-              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <input
+                    type="checkbox"
+                    className="accent-violet-600"
+                    checked={evalProcessed}
+                    onChange={(e) => setEvalProcessed(e.target.checked)}
+                  />
+                  查询处理（改写/多查询/HyDE/实体）
+                </label>
+                <button
+                  onClick={runEval}
+                  disabled={evalCompare.running != null}
+                  className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 disabled:opacity-60"
+                >
+                  {evalCompare.running && evalCompare.running !== 'both'
+                    ? '评测中（约 10 用例）…'
+                    : '运行评测'}
+                </button>
+                <button
+                  onClick={runEvalAB}
+                  disabled={evalCompare.running != null}
+                  className="px-4 py-2 rounded-lg border border-violet-300 text-violet-700 text-sm font-medium hover:bg-violet-50 disabled:opacity-60"
+                >
+                  {evalCompare.running === 'both' ? 'A/B 评测中…' : 'A/B 对比（原样 vs 查询处理）'}
+                </button>
+              </div>
             </div>
-            {evalState.error && <div className="text-sm text-red-500 mb-2">⚠️ {evalState.error}</div>}
-            {evalState.result && (
+            {evalCompare.error && <div className="text-sm text-red-500 mb-2">⚠️ {evalCompare.error}</div>}
+            {(evalCompare.off || evalCompare.on) && (
               <div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-3">
-                  {[
-                    { label: 'Recall@5', v: evalState.result.retrieval.recallAt5 },
-                    { label: 'MRR@5', v: evalState.result.retrieval.mrrAt5 },
-                    { label: 'NDCG@5', v: evalState.result.retrieval.ndcgAt5 },
-                    { label: '忠实度', v: evalState.result.answer.avgFaithfulness },
-                    { label: '相关性', v: evalState.result.answer.avgRelevance },
-                    { label: '引用率', v: evalState.result.answer.citationRate },
-                  ].map((m) => (
+                {evalCompare.off && evalCompare.on && (
+                  <div className="text-xs text-slate-400 mb-2">
+                    A/B：左=原样检索，右=查询处理管线，绿色=提升，红色=下降
+                  </div>
+                )}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-3">
+                  {evalMetricRows.map((m) => (
                     <div key={m.label} className="border border-slate-200 rounded-lg px-3 py-2">
                       <div className="text-xs text-slate-400">{m.label}</div>
-                      <div className="text-xl font-bold text-slate-800">{m.v}</div>
+                      {m.off != null && m.on != null ? (
+                        <>
+                          <div className="text-lg font-bold text-slate-800">
+                            {m.off.toFixed(2)} → {m.on.toFixed(2)}
+                          </div>
+                          <div
+                            className={`text-xs mt-0.5 ${m.on - m.off >= 0 ? 'text-green-600' : 'text-red-500'}`}
+                          >
+                            Δ {m.on - m.off >= 0 ? '+' : ''}
+                            {(m.on - m.off).toFixed(2)}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-xl font-bold text-slate-800">
+                          {(m.on ?? m.off ?? 0).toFixed(2)}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -367,24 +559,52 @@ export default function ChunkQualityPage() {
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
                         <th className="text-left px-3 py-2 font-medium">问题</th>
-                        <th className="text-left px-3 py-2 font-medium">Recall</th>
-                        <th className="text-left px-3 py-2 font-medium">MRR</th>
-                        <th className="text-left px-3 py-2 font-medium">忠实度</th>
-                        <th className="text-left px-3 py-2 font-medium">相关性</th>
+                        {evalCompare.off && evalCompare.on ? (
+                          <>
+                            <th className="text-left px-3 py-2 font-medium">Recall（原样→处理）</th>
+                            <th className="text-left px-3 py-2 font-medium">MRR（原样→处理）</th>
+                            <th className="text-left px-3 py-2 font-medium">忠实度（原样→处理）</th>
+                          </>
+                        ) : (
+                          <>
+                            <th className="text-left px-3 py-2 font-medium">Recall</th>
+                            <th className="text-left px-3 py-2 font-medium">MRR</th>
+                            <th className="text-left px-3 py-2 font-medium">忠实度</th>
+                          </>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {evalState.result.cases.map((c, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="px-3 py-2 text-slate-700 max-w-[280px] truncate" title={c.question}>
-                            {c.question}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">{c.recall.toFixed(2)}</td>
-                          <td className="px-3 py-2 text-slate-700">{c.mrr.toFixed(2)}</td>
-                          <td className="px-3 py-2 text-slate-700">{c.faithfulness}</td>
-                          <td className="px-3 py-2 text-slate-700">{c.relevance}</td>
-                        </tr>
-                      ))}
+                      {(evalCompare.off && evalCompare.on
+                        ? evalCompare.off.cases.map((c, i) => {
+                            const co = evalCompare.on?.cases[i]
+                            return (
+                              <tr key={i} className="hover:bg-slate-50">
+                                <td className="px-3 py-2 text-slate-700 max-w-[280px] truncate" title={c.question}>
+                                  {c.question}
+                                </td>
+                                <td className="px-3 py-2 text-slate-700">
+                                  {c.recall.toFixed(2)} → {co?.recall.toFixed(2)}
+                                </td>
+                                <td className="px-3 py-2 text-slate-700">
+                                  {c.mrr.toFixed(2)} → {co?.mrr.toFixed(2)}
+                                </td>
+                                <td className="px-3 py-2 text-slate-700">
+                                  {c.faithfulness} → {co?.faithfulness}
+                                </td>
+                              </tr>
+                            )
+                          })
+                        : (evalCompare.off ?? evalCompare.on)!.cases.map((c, i) => (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="px-3 py-2 text-slate-700 max-w-[280px] truncate" title={c.question}>
+                                {c.question}
+                              </td>
+                              <td className="px-3 py-2 text-slate-700">{c.recall.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-slate-700">{c.mrr.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-slate-700">{c.faithfulness}</td>
+                            </tr>
+                          )))}
                     </tbody>
                   </table>
                 </div>

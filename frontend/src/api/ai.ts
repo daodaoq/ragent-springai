@@ -20,10 +20,18 @@ export interface RagSource {
   content?: string
 }
 
+/** 查询处理管线轨迹（P6 rewritten 事件：改写后的查询 + 各阶段运行情况） */
+export interface RewrittenInfo {
+  intent?: string
+  rewrittenQuery?: string
+  stages?: { name: string; ok: boolean; ms: number }[]
+}
+
 interface StreamHandlers {
   onSources?: (sources: RagSource[]) => void
   onContent?: (text: string) => void
   onToolCall?: (tool: ToolCallInfo) => void
+  onRewritten?: (info: RewrittenInfo) => void
 }
 
 /**
@@ -76,6 +84,12 @@ async function streamSSE(url: string, body: unknown, handlers: StreamHandlers): 
         } catch {
           // 忽略无法解析的工具调用
         }
+      } else if (event === 'rewritten') {
+        try {
+          handlers.onRewritten?.(JSON.parse(payload))
+        } catch {
+          // 忽略无法解析的改写信息
+        }
       } else {
         acc += payload
         handlers.onContent?.(acc)
@@ -93,9 +107,13 @@ export async function streamChat(
   await streamSSE('/api/ai/chat/stream', { message, conversationId }, { onContent })
 }
 
-/** RAG 知识库问答流式（无状态） */
-export async function streamRag(message: string, handlers: StreamHandlers): Promise<void> {
-  await streamSSE('/api/ai/rag/stream', { message }, handlers)
+/** RAG 知识库问答流式（P6 起带多轮记忆 conversationId） */
+export async function streamRag(
+  message: string,
+  conversationId: string,
+  handlers: StreamHandlers,
+): Promise<void> {
+  await streamSSE('/api/ai/rag/stream', { message, conversationId }, handlers)
 }
 
 /** Agent 智能体流式（tool-call 事件 + 最终 content） */

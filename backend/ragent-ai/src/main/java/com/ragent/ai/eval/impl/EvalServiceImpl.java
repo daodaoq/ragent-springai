@@ -49,12 +49,12 @@ public class EvalServiceImpl implements EvalService {
     private final ResourceLoader resourceLoader;
 
     @Override
-    public EvalReport run() {
+    public EvalReport run(boolean processed) {
         Map<String, Long> docIdByFile = seedDocs();
         List<EvalCase> cases = loadCases();
         List<CaseResult> results = new ArrayList<>();
         for (EvalCase c : cases) {
-            results.add(runCase(c, docIdByFile));
+            results.add(runCase(c, docIdByFile, processed));
         }
         return aggregate(results);
     }
@@ -87,14 +87,14 @@ public class EvalServiceImpl implements EvalService {
         }
     }
 
-    private CaseResult runCase(EvalCase c, Map<String, Long> docIdByFile) {
+    private CaseResult runCase(EvalCase c, Map<String, Long> docIdByFile, boolean processed) {
         List<Long> relevantDocIds = c.docs().stream()
                 .map(docIdByFile::get)
                 .filter(Objects::nonNull)
                 .toList();
 
-        // 1. 检索
-        List<Document> retrieved = ragService.retrieve(c.question(), TOP_K);
+        // 1. 检索（processed 走查询处理管线，gateByIntent=false）
+        List<Document> retrieved = ragService.retrieve(c.question(), TOP_K, processed);
         List<Boolean> relevant = retrieved.stream()
                 .map(d -> relevantDocIds.contains(parseLong(d.getMetadata().get("documentId"))))
                 .toList();

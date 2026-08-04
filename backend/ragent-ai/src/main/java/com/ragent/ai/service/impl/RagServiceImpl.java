@@ -3,6 +3,8 @@ package com.ragent.ai.service.impl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ragent.ai.config.RetrievalProperties;
 import com.ragent.ai.service.AiRetry;
+import com.ragent.ai.service.ChatMemoryService;
+import com.ragent.ai.service.QueryPipeline;
 import com.ragent.ai.service.RagService;
 import com.ragent.ai.service.RetrievalService;
 import org.springframework.ai.chat.client.ChatClient;
@@ -13,11 +15,12 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * RAG 检索增强问答服务实现（P3；P4 接入混合检索 + 重排）。
+ * RAG 检索增强问答服务实现（P3；P4 接入混合检索 + 重排；P6 接入可插拔查询处理管线 + 多轮记忆）。
  * 检索方法同时服务于流式接口与评测程序，避免逻辑重复。
  */
 @Service
@@ -30,22 +33,40 @@ public class RagServiceImpl implements RagService {
             如果知识库内容不足以回答，就如实说明不知道，不要编造。
             """;
 
+    private static final String NON_RAG_HINT = "这个问题不像是在问知识库内容（可能想闲聊或与知识库无关）。"
+            + "请提与知识库相关的问题，我会基于知识库内容回答。";
+
     private final RetrievalService retrievalService;
     private final ObjectProvider<ChatClient> chatClientProvider;
     private final ObjectMapper objectMapper;
     private final RetrievalProperties props;
+    private final ChatMemoryService chatMemoryService;
+    private final QueryPipeline queryPipeline;
 
     public RagServiceImpl(RetrievalService retrievalService, ObjectProvider<ChatClient> chatClientProvider,
-                          ObjectMapper objectMapper, RetrievalProperties props) {
+                          ObjectMapper objectMapper, RetrievalProperties props,
+                          ChatMemoryService chatMemoryService, QueryPipeline queryPipeline) {
         this.retrievalService = retrievalService;
         this.chatClientProvider = chatClientProvider;
         this.objectMapper = objectMapper;
         this.props = props;
+        this.chatMemoryService = chatMemoryService;
+        this.queryPipeline = queryPipeline;
     }
 
     @Override
     public List<Document> retrieve(String question, int topK) {
-        return retrievalService.retrieve(question, topK);
+        return retrieve(question, topK, true);
+    }
+
+    @Override
+    public List<Document> retrieve(String question, int topK, boolean processed) {
+        if (!processed) {
+            return retrievalService.retrieve(question, topK);
+        }
+        // 评测/无会话路径：无历史、关闭意图门禁（评测用例都是知识库问题，避免误判跳过）
+        QueryPipeline.ProcessedQuery pq = queryPipeline.run(question, List.of(), false);
+        return retrievalService.retrieve(toRetrievalQuery(pq), topK);
     }
 
     @Override
@@ -88,13 +109,74 @@ public class RagServiceImpl implements RagService {
     }
 
     @Override
-    public Flux<ServerSentEvent<String>> ragStream(String question) {
-        List<Document> docs = retrieve(question, props.getTopK());
+    public Flux<ServerSentEvent<String>> ragStream(String question, String conversationId) {
+        List<ChatMemoryService.ChatMessage> history = chatMemoryService.load(conversationId);
+        QueryPipeline.ProcessedQuery pq = queryPipeline.run(question, history, true);
+        if (pq.gated()) {
+            // 意图门禁命中：非知识库问题，不检索，只给提示
+            return Flux.just(
+                    sse("rewritten", rewrittenJson(pq)),
+                    sse("content", NON_RAG_HINT));
+        }
+
+        List<Document> docs = retrievalService.retrieve(toRetrievalQuery(pq), props.getTopK());
+        StringBuilder answer = new StringBuilder();
         return Flux.concat(
+                Flux.just(sse("rewritten", rewrittenJson(pq))),
                 Flux.just(sse("sources", sourcesJson(docs))),
-                streamAnswer(question, docs).map(c -> sse("content", c))
+                streamAnswer(question, docs)
+                        .doOnNext(answer::append)
+                        .doOnComplete(() -> chatMemoryService.append(conversationId, question, answer.toString()))
+                        .map(c -> sse("content", c))
         );
     }
+
+    // ==================== 管线产物 → 检索规格 ====================
+
+    /**
+     * 检索查询拼装：dense = [hyde?] + variants（无变体则改写句）；keyword = variants（无变体则改写句）；
+     * rerank 用改写句；实体过滤 filename/page。
+     */
+    private RetrievalService.RetrievalQuery toRetrievalQuery(QueryPipeline.ProcessedQuery pq) {
+        String rewritten = pq.rewrittenQuery();
+        List<String> queries = (pq.variants() == null || pq.variants().isEmpty())
+                ? List.of(rewritten) : pq.variants();
+
+        List<String> dense = new ArrayList<>();
+        if (pq.hyde() != null && !pq.hyde().isBlank()) {
+            dense.add(pq.hyde());
+        }
+        dense.addAll(queries);
+
+        RetrievalService.EntityHint filter = (pq.filename() != null || pq.page() != null)
+                ? new RetrievalService.EntityHint(pq.filename(), pq.page()) : null;
+        return new RetrievalService.RetrievalQuery(rewritten, dense, queries, filter);
+    }
+
+    /** rewritten SSE 事件：intent + 改写后查询 + 各阶段轨迹（前端透明展示） */
+    private String rewrittenJson(QueryPipeline.ProcessedQuery pq) {
+        try {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("intent", pq.intent());
+            m.put("rewrittenQuery", pq.rewrittenQuery());
+            m.put("filename", pq.filename());
+            m.put("page", pq.page());
+            List<Map<String, Object>> stages = new ArrayList<>();
+            for (QueryPipeline.StageRun r : pq.runs()) {
+                Map<String, Object> sm = new LinkedHashMap<>();
+                sm.put("name", r.name());
+                sm.put("ok", r.ok());
+                sm.put("ms", r.ms());
+                stages.add(sm);
+            }
+            m.put("stages", stages);
+            return objectMapper.writeValueAsString(m);
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    // ==================== sources ====================
 
     private String sourcesJson(List<Document> docs) {
         try {

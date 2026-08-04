@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { clearMemory, streamAgent, streamChat, streamRag, type RagSource } from '../api/ai'
+import { clearMemory, streamAgent, streamChat, streamRag, type RagSource, type RewrittenInfo } from '../api/ai'
 import http from '../api/http'
 import { getDocumentSource, type KbDocumentSource } from '../api/kb'
 import Markdown from '../components/Markdown'
@@ -12,6 +12,8 @@ interface Message {
   content: string
   sources?: RagSource[]
   tools?: ToolCallInfo[]
+  /** P6 查询处理管线轨迹（改写后查询 + 各阶段） */
+  rewritten?: RewrittenInfo
 }
 
 const WELCOME: Record<Mode, string> = {
@@ -131,9 +133,10 @@ export default function ChatPage() {
     setStreaming(true)
     try {
       if (mode === 'rag') {
-        await streamRag(text, {
+        await streamRag(text, convId, {
           onSources: (sources) => updateLast({ sources }),
           onContent: (acc) => updateLast({ content: acc }),
+          onRewritten: (info) => updateLast({ rewritten: info }),
         })
       } else if (mode === 'agent') {
         await streamAgent(text, convId, {
@@ -226,6 +229,24 @@ export default function ChatPage() {
                   )}
                 </div>
               </div>
+              {msg.rewritten?.rewrittenQuery &&
+                i > 0 &&
+                messages[i - 1].role === 'user' &&
+                msg.rewritten.rewrittenQuery !== messages[i - 1].content && (
+                  <div
+                    className="ml-2 text-[11px] text-slate-400"
+                    title={
+                      msg.rewritten.stages?.length
+                        ? '管线轨迹：' +
+                          msg.rewritten.stages
+                            .map((s) => `${s.name}${s.ok ? `(${s.ms}ms)` : '✗'}`)
+                            .join(' → ')
+                        : undefined
+                    }
+                  >
+                    🔍 已优化检索：<span className="text-slate-500">{msg.rewritten.rewrittenQuery}</span>
+                  </div>
+                )}
               {msg.tools && msg.tools.length > 0 && (
                 <div className="ml-2 flex flex-wrap gap-1">
                   {msg.tools.map((t, j) => (

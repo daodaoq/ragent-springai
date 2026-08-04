@@ -9,7 +9,12 @@ import java.util.List;
  */
 public interface EvalService {
 
-    EvalReport run();
+    /**
+     * 运行评测。
+     *
+     * @param processed true=检索走查询处理管线（改写/多查询/HyDE/实体）；false=原样检索（A/B 基线）
+     */
+    EvalReport run(boolean processed);
 
     // ==================== 数据结构 ====================
 
