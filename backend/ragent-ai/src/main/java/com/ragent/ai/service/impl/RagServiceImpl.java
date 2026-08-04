@@ -108,7 +108,7 @@ public class RagServiceImpl implements RagService {
                 sources.add(new SourceItem(i++, filename, excerpt, d.getScore(),
                         asStr(meta.get("headingPath")),
                         asInt(meta.get("lineStart")), asInt(meta.get("lineEnd")),
-                        asInt(meta.get("page"))));
+                        asInt(meta.get("page")), asStr(meta.get("documentId")), text));
             }
             return objectMapper.writeValueAsString(sources);
         } catch (Exception e) {

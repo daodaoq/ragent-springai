@@ -73,7 +73,7 @@ public class ChunkingService {
 
     private List<Section> parseSections(String[] lines) {
         List<Section> sections = new ArrayList<>();
-        List<String> stack = new ArrayList<>();
+        List<StackEntry> stack = new ArrayList<>();
         String currentTitle = null;
         String currentPath = null;
         List<Integer> body = new ArrayList<>();
@@ -83,15 +83,17 @@ public class ChunkingService {
                 if (currentTitle != null) {
                     sections.add(new Section(currentTitle, currentPath, body));
                 }
-                // 维护标题栈：级别 >= 当前标题的旧标题出栈，当前标题入栈，形成嵌套路径
                 int level = m.group(1).length();
-                while (!stack.isEmpty() && headingLevel(stack.get(stack.size() - 1)) >= level) {
+                // 维护标题栈：级别 >= 当前标题的旧标题出栈，当前标题入栈，形成嵌套路径
+                while (!stack.isEmpty() && stack.get(stack.size() - 1).level() >= level) {
                     stack.remove(stack.size() - 1);
                 }
-                String headingLine = lines[i].trim(); // 保留 "# 标题" 原文作为上下文前缀
-                stack.add(headingLine);
-                currentTitle = headingLine;
-                currentPath = String.join(" > ", stack);
+                // 入向量库前清洗：去掉标题行开头的 # 标记（"# Transformer" → "Transformer"），
+                // 只留标题文字；标题级别单独记录，供栈判断层级。
+                String headingText = cleanHeading(lines[i].trim());
+                stack.add(new StackEntry(headingText, level));
+                currentTitle = headingText;
+                currentPath = stack.stream().map(StackEntry::text).collect(Collectors.joining(" > "));
                 body = new ArrayList<>();
             } else {
                 body.add(i);
@@ -103,13 +105,13 @@ public class ChunkingService {
         return sections;
     }
 
-    /** 标题行前缀 # 的个数 = 标题级别 */
-    private static int headingLevel(String headingLine) {
-        int n = 0;
-        while (n < headingLine.length() && headingLine.charAt(n) == '#') {
-            n++;
-        }
-        return n;
+    /** 去掉标题行开头的 # 与空格（"## 为什么需要 Transformer" → "为什么需要 Transformer"） */
+    private static String cleanHeading(String headingLine) {
+        return headingLine.replaceAll("^#{1,6}\\s+", "");
+    }
+
+    /** 标题栈条目：text 为清洗后的标题文字，level 为标题级别（# 个数） */
+    private record StackEntry(String text, int level) {
     }
 
     // ==================== 小节切分 ====================

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { clearMemory, streamAgent, streamChat, streamRag, type RagSource } from '../api/ai'
 import http from '../api/http'
+import { getDocumentSource, type KbDocumentSource } from '../api/kb'
 import Markdown from '../components/Markdown'
 import type { ToolCallInfo } from '../types'
 
@@ -55,6 +56,12 @@ export default function ChatPage() {
   const [feedback, setFeedback] = useState<Record<number, 1 | -1>>({})
   /** 反馈提交失败时的提示（3s 自动消失） */
   const [feedbackError, setFeedbackError] = useState('')
+  /** 点开的来源详情弹窗（默认看完整切片，可切换「查看原文全文」） */
+  const [sourceDetail, setSourceDetail] = useState<RagSource | null>(null)
+  const [sourceView, setSourceView] = useState<'chunk' | 'full'>('chunk')
+  const [sourceFull, setSourceFull] = useState<KbDocumentSource | null>(null)
+  const [sourceFullLoading, setSourceFullLoading] = useState(false)
+  const [sourceFullError, setSourceFullError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -67,6 +74,34 @@ export default function ChatPage() {
     setConvId(loadConvId(m))
     setMessages([{ role: 'assistant', content: WELCOME[m] }])
     setFeedback({})
+  }
+
+  const openSourceDetail = (s: RagSource) => {
+    setSourceDetail(s)
+    setSourceView('chunk')
+    setSourceFull(null)
+    setSourceFullError('')
+  }
+
+  /** 弹窗内加载该来源所属文档的原文全文 */
+  const loadSourceFull = async (s: RagSource) => {
+    if (!s.documentId) {
+      setSourceFullError('该来源缺少文档 ID（旧数据），无法查看原文')
+      setSourceView('full')
+      return
+    }
+    setSourceView('full')
+    setSourceFull(null)
+    setSourceFullLoading(true)
+    setSourceFullError('')
+    try {
+      const res = await getDocumentSource(s.documentId)
+      setSourceFull(res.data)
+    } catch (err) {
+      setSourceFullError(err instanceof Error ? err.message : '加载原文失败')
+    } finally {
+      setSourceFullLoading(false)
+    }
   }
 
   const clearConversation = () => {
@@ -208,9 +243,15 @@ export default function ChatPage() {
                 <div className="ml-2 space-y-1">
                   <div className="text-xs text-slate-400">📎 引用来源</div>
                   {msg.sources.map((s) => (
-                    <div key={s.idx} className="max-w-[85%] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                    <div
+                      key={s.idx}
+                      onClick={() => openSourceDetail(s)}
+                      title="点击查看完整内容"
+                      className="max-w-[85%] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 cursor-pointer hover:bg-slate-100 hover:border-blue-300 transition-colors"
+                    >
                       <div className="text-xs font-medium text-blue-600">
                         [{s.idx}] {s.filename}
+                        <span className="text-[11px] text-slate-400 ml-1 font-normal">查看全文 ›</span>
                         {s.lineStart != null && (
                           <span className="text-xs text-slate-400 ml-2 font-normal">
                             {s.lineEnd != null ? `第 ${s.lineStart + 1}-${s.lineEnd + 1} 行` : `第 ${s.lineStart + 1} 行`}
@@ -278,6 +319,87 @@ export default function ChatPage() {
           {streaming ? '生成中' : '发送'}
         </button>
       </div>
+
+      {sourceDetail && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          onClick={() => setSourceDetail(null)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl w-full max-w-3xl h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between px-5 py-4 border-b border-slate-200">
+              <div className="min-w-0">
+                <h2 className="font-bold text-slate-800 truncate">
+                  {sourceView === 'full'
+                    ? `📄 原文：${sourceFull?.filename ?? sourceDetail.filename}`
+                    : `📎 来源 ${sourceDetail.idx}：${sourceDetail.filename}`}
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {sourceView === 'full' ? (
+                    sourceFull ? `${sourceFull.lineCount} 行 · ${sourceFull.contentType ?? '未知类型'}` : ' '
+                  ) : (
+                    <>
+                      {sourceDetail.headingPath && <span>📑 {sourceDetail.headingPath} · </span>}
+                      {sourceDetail.lineStart != null && (
+                        <span>
+                          {sourceDetail.lineEnd != null
+                            ? `第 ${sourceDetail.lineStart + 1}-${sourceDetail.lineEnd + 1} 行`
+                            : `第 ${sourceDetail.lineStart + 1} 行`}
+                        </span>
+                      )}
+                      {sourceDetail.page != null && <span> · 第 {sourceDetail.page} 页</span>}
+                      {sourceDetail.score != null && <span> · 相关度 {sourceDetail.score.toFixed(2)}</span>}
+                    </>
+                  )}
+                </p>
+              </div>
+              <button
+                onClick={() => setSourceDetail(null)}
+                className="shrink-0 text-slate-400 hover:text-slate-600 text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {sourceView === 'full' ? (
+                sourceFullLoading ? (
+                  <div className="text-slate-400 text-sm py-10 text-center">加载原文中...</div>
+                ) : sourceFullError ? (
+                  <div className="text-red-500 text-sm py-10 text-center">⚠️ {sourceFullError}</div>
+                ) : (
+                  <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">
+                    {sourceFull?.text}
+                  </pre>
+                )
+              ) : (
+                <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">
+                  {sourceDetail.content ?? sourceDetail.excerpt}
+                </pre>
+              )}
+            </div>
+            <div className="flex items-center justify-between px-5 py-3 border-t border-slate-200">
+              {sourceView === 'full' ? (
+                <button
+                  onClick={() => setSourceView('chunk')}
+                  className="px-3 py-1.5 rounded-lg text-slate-500 text-sm hover:bg-slate-50"
+                >
+                  ← 返回切片内容
+                </button>
+              ) : (
+                <button
+                  onClick={() => loadSourceFull(sourceDetail)}
+                  disabled={sourceFullLoading}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                >
+                  📄 查看原文全文
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -34,8 +34,17 @@ public interface KnowledgeBaseService {
     /** 文档切片分页查看（按 chunk_index 升序） */
     PageResult<DocumentChunk> chunks(Long id, int pageNum, int pageSize);
 
+    /** 查看原文：从 MinIO 读取原始文件并提取文本。未保存原始文件的旧数据返回提示重新上传 */
+    SourceText getSource(Long id);
+
     void delete(Long id);
+
+    /** 批量删除多个文档（含切片、向量、MinIO 原始文件） */
+    void deleteBatch(List<Long> ids);
 
     /** 批量上传的单文件结果 */
     record UploadResult(String filename, boolean success, String message) {}
+
+    /** 原文内容：filename + 提取后的全文文本 + 行数（含文件名/类型信息） */
+    record SourceText(String filename, String contentType, String text, int lineCount) {}
 }

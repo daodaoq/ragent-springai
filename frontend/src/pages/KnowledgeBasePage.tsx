@@ -2,12 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import {
   deleteDocument,
+  deleteDocuments,
+  getDocumentSource,
   listChunks,
   listDocuments,
   retryDocument,
   uploadDocuments,
   type DocumentChunk,
   type KbDocument,
+  type KbDocumentSource,
   type UploadResult,
 } from '../api/kb'
 import { useAuthStore } from '../store/auth'
@@ -36,6 +39,20 @@ export default function KnowledgeBasePage() {
   const [chunkPage, setChunkPage] = useState(1)
   const [chunkLoading, setChunkLoading] = useState(false)
   const [chunkError, setChunkError] = useState('')
+  // 查看原文弹窗
+  const [sourceDoc, setSourceDoc] = useState<KbDocument | null>(null)
+  const [source, setSource] = useState<KbDocumentSource | null>(null)
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceError, setSourceError] = useState('')
+  // 批量选择与删除确认弹窗（替代系统 window.confirm）
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [confirmState, setConfirmState] = useState<{
+    title: string
+    message: string
+    confirmText?: string
+    danger?: boolean
+    onConfirm: () => void
+  } | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -126,24 +143,80 @@ export default function KnowledgeBasePage() {
     void doUpload(list, overwriteNames, skipped.length)
   }
 
-  const handleDelete = async (id: string) => {
-    if (!window.confirm('确定删除该文档及其全部切片向量？')) return
-    try {
-      await deleteDocument(id)
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '删除失败')
-    }
+  const handleDelete = (d: KbDocument) => {
+    setConfirmState({
+      title: '删除文档',
+      message: `确定删除「${d.filename}」？该文档的切片、向量和 MinIO 原始文件会一并删除，此操作不可恢复。`,
+      onConfirm: async () => {
+        try {
+          await deleteDocument(d.id)
+          await load()
+        } catch (err) {
+          setError(err instanceof Error ? err.message : '删除失败')
+        } finally {
+          setConfirmState(null)
+        }
+      },
+    })
   }
 
-  const handleRetry = async (d: KbDocument) => {
-    if (!window.confirm(`重新处理「${d.filename}」？（从已保存的原始文件重新切分+向量化，无需重新上传）`)) return
-    try {
-      await retryDocument(d.id)
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '重试失败')
-    }
+  const handleRetry = (d: KbDocument) => {
+    setConfirmState({
+      title: '重新处理文档',
+      message: `重新处理「${d.filename}」？将从已保存的原始文件重新切分+向量化，无需重新上传。`,
+      confirmText: '重新处理',
+      danger: false,
+      onConfirm: async () => {
+        try {
+          await retryDocument(d.id)
+          await load()
+        } catch (err) {
+          setError(err instanceof Error ? err.message : '重试失败')
+        } finally {
+          setConfirmState(null)
+        }
+      },
+    })
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => (prev.size === docs.length ? new Set() : new Set(docs.map((d) => d.id))))
+  }
+
+  const handleBatchDelete = () => {
+    const names = docs
+      .filter((d) => selected.has(d.id))
+      .slice(0, 3)
+      .map((d) => d.filename)
+      .join('、')
+    const message =
+      selected.size > 3
+        ? `确定删除选中的 ${selected.size} 个文档（${names} 等）？切片、向量和 MinIO 原始文件一并删除，不可恢复。`
+        : `确定删除选中的 ${selected.size} 个文档？切片、向量和 MinIO 原始文件一并删除，不可恢复。`
+    setConfirmState({
+      title: '批量删除',
+      message,
+      onConfirm: async () => {
+        try {
+          await deleteDocuments(Array.from(selected))
+          setSelected(new Set())
+          await load()
+        } catch (err) {
+          setError(err instanceof Error ? err.message : '删除失败')
+        } finally {
+          setConfirmState(null)
+        }
+      },
+    })
   }
 
   const loadChunks = async (docId: string, page: number) => {
@@ -166,12 +239,27 @@ export default function KnowledgeBasePage() {
     await loadChunks(doc.id, 1)
   }
 
+  const openSource = async (doc: KbDocument) => {
+    setSourceDoc(doc)
+    setSource(null)
+    setSourceError('')
+    setSourceLoading(true)
+    try {
+      const res = await getDocumentSource(doc.id)
+      setSource(res.data)
+    } catch (err) {
+      setSourceError(err instanceof Error ? err.message : '加载原文失败')
+    } finally {
+      setSourceLoading(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-lg font-bold text-slate-800">📚 知识库管理</h1>
-          <p className="text-sm text-slate-500 mt-0.5">上传文档构建实验室知识库，供 AI 检索问答使用（支持 .md / .txt / .pdf）</p>
+          <p className="text-sm text-slate-500 mt-0.5">上传文档构建实验室知识库，供 AI 检索问答使用（支持 .md / .txt / .pdf / .docx）</p>
         </div>
         <div className="flex items-center gap-3">
           {uploading && uploadProgress && (
@@ -194,7 +282,7 @@ export default function KnowledgeBasePage() {
           >
             上传文档
           </button>
-          <input ref={fileRef} type="file" accept=".md,.txt,.pdf" multiple className="hidden" onChange={handleUpload} />
+          <input ref={fileRef} type="file" accept=".md,.txt,.pdf,.docx" multiple className="hidden" onChange={handleUpload} />
         </div>
       </div>
 
@@ -226,6 +314,21 @@ export default function KnowledgeBasePage() {
 
       {notice && <div className="text-amber-600 text-sm">ℹ️ {notice}</div>}
 
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 bg-blue-50 border border-blue-100 rounded-lg px-4 py-2 text-sm">
+          <span className="text-blue-700 font-medium">已选 {selected.size} 个</span>
+          <button onClick={() => setSelected(new Set())} className="text-slate-500 hover:text-slate-700">
+            取消选择
+          </button>
+          <button
+            onClick={handleBatchDelete}
+            className="ml-auto px-3 py-1 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700"
+          >
+            批量删除
+          </button>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {docs.length === 0 ? (
           <div className="text-slate-400 text-sm py-12 text-center">知识库为空，上传第一份文档开始构建</div>
@@ -233,6 +336,14 @@ export default function KnowledgeBasePage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-slate-500 border-b border-slate-200">
+                <th className="px-4 py-3 font-medium w-10">
+                  <input
+                    type="checkbox"
+                    checked={docs.length > 0 && selected.size === docs.length}
+                    onChange={toggleSelectAll}
+                    className="accent-blue-600"
+                  />
+                </th>
                 <th className="px-4 py-3 font-medium">文件名</th>
                 <th className="px-4 py-3 font-medium">切片数</th>
                 <th className="px-4 py-3 font-medium">大小</th>
@@ -244,6 +355,14 @@ export default function KnowledgeBasePage() {
             <tbody>
               {docs.map((d) => (
                 <tr key={d.id} className="border-b border-slate-100">
+                  <td className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(d.id)}
+                      onChange={() => toggleSelect(d.id)}
+                      className="accent-blue-600"
+                    />
+                  </td>
                   <td className="px-4 py-3 text-slate-700">{d.filename}</td>
                   <td className="px-4 py-3 text-slate-500">{d.chunkCount}</td>
                   <td className="px-4 py-3 text-slate-500">{(d.size / 1024).toFixed(1)} KB</td>
@@ -258,6 +377,9 @@ export default function KnowledgeBasePage() {
                   </td>
                   <td className="px-4 py-3 text-slate-400">{formatTime(d.createdAt)}</td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <button onClick={() => openSource(d)} className="text-emerald-500 hover:text-emerald-600 mr-3">
+                      查看原文
+                    </button>
                     <button onClick={() => openChunks(d)} className="text-blue-500 hover:text-blue-600 mr-3">
                       查看切片
                     </button>
@@ -266,7 +388,7 @@ export default function KnowledgeBasePage() {
                         重试
                       </button>
                     )}
-                    <button onClick={() => handleDelete(d.id)} className="text-red-400 hover:text-red-600">
+                    <button onClick={() => handleDelete(d)} className="text-red-400 hover:text-red-600">
                       删除
                     </button>
                   </td>
@@ -418,6 +540,75 @@ export default function KnowledgeBasePage() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {sourceDoc && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          onClick={() => setSourceDoc(null)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl w-full max-w-3xl h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between px-5 py-4 border-b border-slate-200">
+              <div className="min-w-0">
+                <h2 className="font-bold text-slate-800 truncate">📄 原文：{sourceDoc.filename}</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {source ? `${source.lineCount} 行 · ${source.contentType ?? '未知类型'}` : ' '}
+                  {sourceDoc.contentType?.toLowerCase().includes('pdf') ? ' · PDF 展示为提取文本' : ''}
+                </p>
+              </div>
+              <button
+                onClick={() => setSourceDoc(null)}
+                className="shrink-0 text-slate-400 hover:text-slate-600 text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {sourceLoading ? (
+                <div className="text-slate-400 text-sm py-10 text-center">加载原文中...</div>
+              ) : sourceError ? (
+                <div className="text-red-500 text-sm py-10 text-center">⚠️ {sourceError}</div>
+              ) : (
+                <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">
+                  {source?.text}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmState && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          onClick={() => setConfirmState(null)}
+        >
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-slate-200">
+              <h2 className="font-bold text-slate-800">{confirmState.title}</h2>
+            </div>
+            <div className="px-5 py-4 text-sm text-slate-600 leading-relaxed">{confirmState.message}</div>
+            <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-200">
+              <button
+                onClick={() => setConfirmState(null)}
+                className="px-3 py-1.5 rounded-lg text-slate-500 text-sm hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmState.onConfirm}
+                className={`px-3 py-1.5 rounded-lg text-white text-sm ${
+                  confirmState.danger === false ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-600 hover:bg-red-700'
+                }`}
+              >
+                {confirmState.confirmText ?? '确认删除'}
+              </button>
+            </div>
           </div>
         </div>
       )}

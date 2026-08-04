@@ -14,6 +14,10 @@ export interface RagSource {
   lineEnd?: number
   /** PDF 页码（1 基；非 PDF 缺失） */
   page?: number
+  /** 所属文档 ID（查看原文全文用；旧数据可能缺失） */
+  documentId?: string
+  /** 完整切片文本（点开来源查看用；旧数据可能缺失则退用 excerpt） */
+  content?: string
 }
 
 interface StreamHandlers {

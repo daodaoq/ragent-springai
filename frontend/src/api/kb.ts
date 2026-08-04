@@ -60,6 +60,10 @@ export const listDocuments = () =>
 export const deleteDocument = (id: string) =>
   http.delete(`/kb/documents/${id}`) as Promise<ApiResult<null>>
 
+/** 批量删除多个文档 */
+export const deleteDocuments = (ids: string[]) =>
+  http.post('/kb/documents/batch-delete', ids) as Promise<ApiResult<null>>
+
 /** 重试处理失败的文档（从 MinIO 读已保存的原始文件，无需重新上传） */
 export const retryDocument = (id: string) =>
   http.post(`/kb/documents/${id}/retry`) as Promise<ApiResult<KbDocument>>
@@ -68,3 +72,14 @@ export const listChunks = (documentId: string, page: number, pageSize: number) =
   http.get(`/kb/documents/${documentId}/chunks`, {
     params: { page, pageSize },
   }) as Promise<ApiResult<PageResult<DocumentChunk>>>
+
+/** 原文内容（从 MinIO 读取原始文件提取后的全文文本，供「查看原文」） */
+export interface KbDocumentSource {
+  filename: string
+  contentType: string | null
+  text: string
+  lineCount: number
+}
+
+export const getDocumentSource = (id: string) =>
+  http.get(`/kb/documents/${id}/source`) as Promise<ApiResult<KbDocumentSource>>

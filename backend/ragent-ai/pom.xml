@@ -53,6 +53,11 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-pdf-document-reader</artifactId>
         </dependency>
+        <!-- Word .docx 解析（Apache POI；版本由 spring-boot-starter-parent 管理） -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+        </dependency>
 
         <!-- Lombok -->
         <dependency>

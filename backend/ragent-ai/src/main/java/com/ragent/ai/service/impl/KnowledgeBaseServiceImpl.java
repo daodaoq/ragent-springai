@@ -14,6 +14,12 @@ import com.ragent.common.result.PageResult;
 import com.ragent.common.storage.MinioStorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.poi.xwpf.usermodel.IBodyElement;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFTable;
+import org.apache.poi.xwpf.usermodel.XWPFTableCell;
+import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -21,6 +27,7 @@ import org.springframework.core.io.ByteArrayResource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -30,6 +37,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -233,6 +241,17 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         doc.setStatus("PENDING");
         doc.setFileHash(sha256Hex(bytes));
         kbDocumentMapper.insert(doc);
+        // 同样落 MinIO：评测注入的文档也能在知识库「查看原文」
+        String objectKey = "kb/" + doc.getId() + "/" + sanitizeFilename(filename);
+        try {
+            minioStorage.put(objectKey, bytes, "text/markdown");
+        } catch (Exception e) {
+            doc.setStatus("FAILED");
+            kbDocumentMapper.updateById(doc);
+            throw e;
+        }
+        doc.setObjectKey(objectKey);
+        kbDocumentMapper.updateById(doc);
         return process(doc, bytes);
     }
 
@@ -252,6 +271,25 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                         .eq(DocumentChunk::getDocumentId, id)
                         .orderByAsc(DocumentChunk::getChunkIndex));
         return PageResult.of(page.getTotal(), pageNum, pageSize, page.getRecords());
+    }
+
+    @Override
+    public SourceText getSource(Long id) {
+        KbDocument doc = kbDocumentMapper.selectById(id);
+        if (doc == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "文档不存在");
+        }
+        if (doc.getObjectKey() == null || doc.getObjectKey().isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "该文档未保存原始文件（旧数据），请删除后重新上传");
+        }
+        byte[] bytes = minioStorage.get(doc.getObjectKey());
+        try {
+            String text = extract(doc.getFilename(), bytes).text();
+            int lineCount = text.isEmpty() ? 0 : text.split("\n", -1).length;
+            return new SourceText(doc.getFilename(), doc.getContentType(), text, lineCount);
+        } catch (IOException e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "读取原文失败: " + friendlyError(e.getMessage()));
+        }
     }
 
     @Override
@@ -278,6 +316,16 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         documentChunkMapper.delete(new LambdaQueryWrapper<DocumentChunk>()
                 .eq(DocumentChunk::getDocumentId, id));
         kbDocumentMapper.deleteById(id);
+    }
+
+    @Override
+    public void deleteBatch(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择要删除的文档");
+        }
+        for (Long id : ids) {
+            delete(id);
+        }
     }
 
     private KbDocument process(KbDocument doc, byte[] bytes) {
@@ -355,6 +403,9 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
      */
     private ExtractedText extract(String filename, byte[] bytes) throws IOException {
         String lower = filename.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".docx")) {
+            return new ExtractedText(extractDocx(bytes), null);
+        }
         if (lower.endsWith(".pdf")) {
             PagePdfDocumentReader reader = new PagePdfDocumentReader(
                     new ByteArrayResource(bytes, filename));
@@ -387,6 +438,35 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             return new ExtractedText(sb.toString(), linePages);
         }
         return new ExtractedText(new String(bytes, StandardCharsets.UTF_8), null);
+    }
+
+    /** 提取 Word .docx 文本：按文档顺序遍历段落与表格（表格单元格以制表符分隔）。仅支持新版 docx */
+    private String extractDocx(byte[] bytes) throws IOException {
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            StringBuilder sb = new StringBuilder();
+            for (IBodyElement element : document.getBodyElements()) {
+                if (element instanceof XWPFParagraph para) {
+                    String t = para.getText().trim();
+                    if (!t.isEmpty()) {
+                        sb.append(t).append('\n');
+                    }
+                } else if (element instanceof XWPFTable table) {
+                    for (XWPFTableRow row : table.getRows()) {
+                        String line = row.getTableCells().stream()
+                                .map(XWPFTableCell::getText)
+                                .map(String::trim)
+                                .collect(Collectors.joining("\t"));
+                        if (!line.isEmpty()) {
+                            sb.append(line).append('\n');
+                        }
+                    }
+                }
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST,
+                    "无法解析 Word 文档（请确认是 .docx 格式）: " + friendlyError(e.getMessage()));
+        }
     }
 
     /** SHA-256 十六进制摘要（内容哈希，用于判断同名文件是否真的变化） */

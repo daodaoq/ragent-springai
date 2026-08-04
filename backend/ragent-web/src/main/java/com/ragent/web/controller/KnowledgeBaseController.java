@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
@@ -63,6 +64,14 @@ public class KnowledgeBaseController {
         return Result.success();
     }
 
+    /** 批量删除：一次删除多个文档（含切片、向量、MinIO 原始文件） */
+    @PostMapping("/documents/batch-delete")
+    @SaCheckLogin
+    public Result<Void> deleteBatch(@RequestBody List<Long> ids) {
+        kbService.deleteBatch(ids);
+        return Result.success();
+    }
+
     /** 文档切片分页查看（按 chunk_index 升序） */
     @GetMapping("/documents/{id}/chunks")
     @SaCheckLogin
@@ -70,5 +79,12 @@ public class KnowledgeBaseController {
                                                     @RequestParam(defaultValue = "1") int page,
                                                     @RequestParam(defaultValue = "20") int pageSize) {
         return Result.success(kbService.chunks(id, page, pageSize));
+    }
+
+    /** 查看原文：从 MinIO 读取原始文件并提取文本，供知识库「查看原文」与聊天来源跳转 */
+    @GetMapping("/documents/{id}/source")
+    @SaCheckLogin
+    public Result<KnowledgeBaseService.SourceText> source(@PathVariable Long id) {
+        return Result.success(kbService.getSource(id));
     }
 }
