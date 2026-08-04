@@ -2,9 +2,13 @@ package com.ragent.web.service;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ragent.common.exception.BusinessException;
 import com.ragent.common.exception.ErrorCode;
+import com.ragent.common.result.PageResult;
 import com.ragent.web.dto.FeedbackDTO;
+import com.ragent.web.dto.FeedbackVO;
 import com.ragent.web.entity.AiFeedback;
 import com.ragent.web.mapper.AiFeedbackMapper;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +44,13 @@ public class FeedbackService {
         long down = total - up;
         double upRate = total == 0 ? 0 : up * 100.0 / total;
         return new FeedbackStats(total, up, down, upRate);
+    }
+
+    /** 分页明细（管理端）；rating 为 null 或 0 时不过滤 */
+    public PageResult<FeedbackVO> page(Integer rating, int pageNum, int pageSize) {
+        Integer filter = (rating == null || rating == 0) ? null : rating;
+        IPage<FeedbackVO> result = aiFeedbackMapper.pageFeedbacks(new Page<>(pageNum, pageSize), filter);
+        return PageResult.of(result.getTotal(), pageNum, pageSize, result.getRecords());
     }
 
     public record FeedbackStats(long total, long up, long down, double upRate) {

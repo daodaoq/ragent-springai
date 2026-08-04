@@ -98,3 +98,15 @@ export interface FeedbackStats {
   down: number
   upRate: number
 }
+
+/** AI 回答反馈明细（管理端表格） */
+export interface FeedbackRecord {
+  id: string
+  userId: string
+  nickname: string | null
+  conversationId: string | null
+  question: string
+  answer: string
+  rating: 1 | -1
+  createdAt: string
+}

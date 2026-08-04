@@ -53,6 +53,8 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false)
   /** 每条助手消息的赞/踩选中态（key = 消息下标） */
   const [feedback, setFeedback] = useState<Record<number, 1 | -1>>({})
+  /** 反馈提交失败时的提示（3s 自动消失） */
+  const [feedbackError, setFeedbackError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -113,25 +115,29 @@ export default function ChatPage() {
     }
   }
 
-  const submitFeedback = (i: number, rating: 1 | -1) => {
+  const submitFeedback = async (i: number, rating: 1 | -1) => {
     if (feedback[i] != null) return
+    setFeedbackError('')
     const msg = messages[i]
     const question = messages[i - 1]
     setFeedback((f) => ({ ...f, [i]: rating }))
-    http
-      .post('/ai/feedback', {
+    try {
+      await http.post('/ai/feedback', {
         conversationId: convId,
         question: question && question.role === 'user' ? question.content : '',
         answer: msg.content,
         rating,
       })
-      .catch(() =>
-        setFeedback((f) => {
-          const copy = { ...f }
-          delete copy[i]
-          return copy
-        }),
-      )
+    } catch {
+      // 提交失败回滚选中态，并明确提示（不再静默，避免看起来「点不动」）
+      setFeedback((f) => {
+        const copy = { ...f }
+        delete copy[i]
+        return copy
+      })
+      setFeedbackError('⚠️ 反馈提交失败，请稍后重试')
+      window.setTimeout(() => setFeedbackError(''), 3000)
+    }
   }
 
   const modeBtns: { key: Mode; label: string }[] = [
@@ -216,21 +222,21 @@ export default function ChatPage() {
                   ))}
                 </div>
               )}
-              {msg.content && (
+              {msg.content && i > 0 && messages[i - 1].role === 'user' && (
                 <div className="ml-2 flex items-center gap-3 text-xs text-slate-400">
                   <button
                     onClick={() => submitFeedback(i, 1)}
                     disabled={feedback[i] != null}
                     className={`hover:text-blue-600 ${feedback[i] === 1 ? 'text-blue-600' : ''}`}
                   >
-                    👍 有帮助
+                    {feedback[i] === 1 ? '👍 已反馈' : '👍 有帮助'}
                   </button>
                   <button
                     onClick={() => submitFeedback(i, -1)}
                     disabled={feedback[i] != null}
                     className={`hover:text-red-500 ${feedback[i] === -1 ? 'text-red-500' : ''}`}
                   >
-                    👎 不准确
+                    {feedback[i] === -1 ? '👎 已反馈' : '👎 不准确'}
                   </button>
                 </div>
               )}
@@ -240,6 +246,7 @@ export default function ChatPage() {
         <div ref={scrollRef} />
       </div>
 
+      {feedbackError && <div className="text-xs text-red-500 mb-1">{feedbackError}</div>}
       <div className="border-t border-slate-200 pt-3 flex gap-2">
         <textarea
           className="flex-1 border border-slate-300 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"

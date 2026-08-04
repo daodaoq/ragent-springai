@@ -8,6 +8,7 @@ import AskPage from '../pages/AskPage'
 import ChatPage from '../pages/ChatPage'
 import KnowledgeBasePage from '../pages/KnowledgeBasePage'
 import DashboardPage from '../pages/DashboardPage'
+import FeedbackPage from '../pages/FeedbackPage'
 
 export default function AppRouter() {
   return (
@@ -20,6 +21,7 @@ export default function AppRouter() {
           <Route path="/ai" element={<ChatPage />} />
           <Route path="/kb" element={<KnowledgeBasePage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/feedback" element={<FeedbackPage />} />
         </Route>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />

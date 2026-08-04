@@ -39,6 +39,11 @@ export default function MainLayout() {
                   数据看板
                 </Link>
               )}
+              {user && (user.role === 'ADMIN' || user.role === 'TEACHER') && (
+                <Link to="/feedback" className="hover:text-blue-600">
+                  AI 反馈
+                </Link>
+              )}
               {user && (
                 <Link to="/ask" className="hover:text-blue-600">
                   我要提问
