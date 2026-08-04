@@ -66,6 +66,12 @@ sa-token:
   timeout: 2592000
   is-log: false
 
+# 分片配置（结构感知分片器）
+ragent:
+  chunking:
+    max-chunk-chars: 800
+    overlap-chars: 100
+
 logging:
   level:
     com.ragent: debug

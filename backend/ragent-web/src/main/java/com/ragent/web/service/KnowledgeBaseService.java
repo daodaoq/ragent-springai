@@ -11,7 +11,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.stereotype.Service;
@@ -38,6 +37,7 @@ public class KnowledgeBaseService {
     private final KbDocumentMapper kbDocumentMapper;
     private final DocumentChunkMapper documentChunkMapper;
     private final VectorStore vectorStore;
+    private final ChunkingService chunkingService;
 
     public KbDocument upload(MultipartFile file) {
         if (file == null || file.isEmpty()) {
@@ -108,30 +108,28 @@ public class KnowledgeBaseService {
             if (text.isBlank()) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "未提取到文本内容");
             }
-            TokenTextSplitter splitter = TokenTextSplitter.builder()
-                    .withChunkSize(500)
-                    .withKeepSeparator(true)
-                    .build();
-            List<Document> chunks = splitter.split(new Document(text));
+            // 结构感知分片：按标题分节 + 段落组块 + 句子边界 + 重叠
+            List<ChunkingService.Chunk> chunks = chunkingService.chunk(text);
 
             List<Document> toStore = new ArrayList<>();
             int idx = 0;
-            for (Document chunk : chunks) {
+            for (ChunkingService.Chunk chunk : chunks) {
                 Map<String, Object> meta = new HashMap<>();
                 // Qdrant payload 不支持 Long，雪花 ID 转 String 存储
                 meta.put("documentId", String.valueOf(doc.getId()));
                 meta.put("filename", filename);
                 meta.put("chunkIndex", idx);
-                chunk.getMetadata().putAll(meta);
+                meta.put("title", chunk.title());
 
+                Document entry = new Document(chunk.content(), meta);
                 DocumentChunk dc = new DocumentChunk();
                 dc.setDocumentId(doc.getId());
-                dc.setContent(chunk.getText());
+                dc.setContent(chunk.content());
                 dc.setChunkIndex(idx);
-                dc.setVectorId(chunk.getId());
+                dc.setVectorId(entry.getId());
                 documentChunkMapper.insert(dc);
 
-                toStore.add(chunk);
+                toStore.add(entry);
                 idx++;
             }
             vectorStore.add(toStore);
