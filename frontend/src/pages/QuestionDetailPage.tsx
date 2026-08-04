@@ -9,7 +9,8 @@ import type { QuestionVO } from '../types'
 
 export default function QuestionDetailPage() {
   const { id } = useParams()
-  const qid = Number(id)
+  // 雪花 ID 是字符串，不能 Number()（会丢精度导致详情 404）
+  const qid = id ?? ''
   const { user } = useAuthStore()
   const [question, setQuestion] = useState<QuestionVO | null>(null)
   const [content, setContent] = useState('')
@@ -51,7 +52,7 @@ export default function QuestionDetailPage() {
     }
   }
 
-  const handleAccept = async (answerId: number) => {
+  const handleAccept = async (answerId: string) => {
     try {
       await acceptAnswer(qid, answerId)
       await load()

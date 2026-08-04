@@ -44,13 +44,14 @@ public interface QuestionMapper extends BaseMapper<Question> {
             """)
     List<TopAskerRow> topAskers(@Param("limit") int limit);
 
-    /** 列名与 record 组件通过 map-underscore-to-camel-case 自动映射（-parameters 编译器参数） */
-    record TrendRow(LocalDate createdDate, Long cnt) {
+    /** 列名与 record 组件通过 map-underscore-to-camel-case 自动映射（-parameters 编译器参数）。
+     *  cnt 用 primitive long：Jackson 已将 boxed Long 序列化为字符串，计数保持数字避免破坏看板。 */
+    record TrendRow(LocalDate createdDate, long cnt) {
     }
 
-    record TagCountRow(String tagName, Long cnt) {
+    record TagCountRow(String tagName, long cnt) {
     }
 
-    record TopAskerRow(Long userId, String nickname, Long cnt) {
+    record TopAskerRow(Long userId, String nickname, long cnt) {
     }
 }

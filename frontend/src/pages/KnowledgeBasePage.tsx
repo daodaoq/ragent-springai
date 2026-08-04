@@ -42,7 +42,7 @@ export default function KnowledgeBasePage() {
     }
   }
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (!window.confirm('确定删除该文档及其全部切片向量？')) return
     try {
       await deleteDocument(id)

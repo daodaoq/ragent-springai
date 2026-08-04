@@ -2,7 +2,7 @@ import http from './http'
 import type { ApiResult } from '../types'
 
 export interface KbDocument {
-  id: number
+  id: string
   filename: string
   contentType: string | null
   size: number
@@ -20,5 +20,5 @@ export const uploadDocument = (file: File) => {
 export const listDocuments = () =>
   http.get('/kb/documents') as Promise<ApiResult<KbDocument[]>>
 
-export const deleteDocument = (id: number) =>
+export const deleteDocument = (id: string) =>
   http.delete(`/kb/documents/${id}`) as Promise<ApiResult<null>>

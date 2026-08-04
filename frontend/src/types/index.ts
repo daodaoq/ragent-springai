@@ -4,8 +4,9 @@ export interface ApiResult<T> {
   data: T
 }
 
+/** 雪花 ID 后端以字符串序列化（防 JS 精度丢失），前端全程按 string 处理 */
 export interface UserInfo {
-  id: number
+  id: string
   username: string
   nickname: string
   role: 'STUDENT' | 'TEACHER' | 'ADMIN'
@@ -15,14 +16,14 @@ export interface UserInfo {
 }
 
 export interface Tag {
-  id: number
+  id: string
   name: string
 }
 
 export interface AnswerVO {
-  id: number
-  questionId: number
-  userId: number
+  id: string
+  questionId: string
+  userId: string
   content: string
   accepted: boolean
   createdAt: string
@@ -30,12 +31,12 @@ export interface AnswerVO {
 }
 
 export interface QuestionVO {
-  id: number
+  id: string
   title: string
   content: string
-  userId: number
+  userId: string
   status: 'OPEN' | 'RESOLVED'
-  bestAnswerId: number | null
+  bestAnswerId: string | null
   viewCount: number
   answerCount: number
   createdAt: string
@@ -85,7 +86,7 @@ export interface TagCountRow {
 
 /** 看板-Top 提问者 */
 export interface TopAskerRow {
-  userId: number
+  userId: string
   nickname: string
   cnt: number
 }
