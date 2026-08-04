@@ -8,6 +8,7 @@ import AskPage from '../pages/AskPage'
 import ChatPage from '../pages/ChatPage'
 import KnowledgeBasePage from '../pages/KnowledgeBasePage'
 import ChunkQualityPage from '../pages/ChunkQualityPage'
+import QueryPipelinePage from '../pages/QueryPipelinePage'
 import DashboardPage from '../pages/DashboardPage'
 import FeedbackPage from '../pages/FeedbackPage'
 import ProfilePage from '../pages/ProfilePage'
@@ -52,6 +53,14 @@ export default function AppRouter() {
             element={
               <RequireAuth>
                 <ChunkQualityPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/kb/pipeline"
+            element={
+              <RequireAuth>
+                <QueryPipelinePage />
               </RequireAuth>
             }
           />

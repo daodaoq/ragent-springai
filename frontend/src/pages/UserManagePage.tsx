@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { listUsers, updateUserRole, deleteUser } from '../api/user'
+import Pagination from '../components/Pagination'
 import type { UserInfo } from '../types'
 
 const roleLabel: Record<string, string> = {
@@ -13,7 +14,7 @@ export default function UserManagePage() {
   const [records, setRecords] = useState<UserInfo[]>([])
   const [total, setTotal] = useState(0)
   const [pageNum, setPageNum] = useState(1)
-  const [pageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(10)
   const [keyword, setKeyword] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [loading, setLoading] = useState(false)
@@ -64,8 +65,6 @@ export default function UserManagePage() {
       setMsg(err instanceof Error ? err.message : '删除失败')
     }
   }
-
-  const totalPages = Math.ceil(total / pageSize) || 1
 
   return (
     <div className="space-y-4">
@@ -173,27 +172,17 @@ export default function UserManagePage() {
         </table>
 
         {/* 分页 */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 text-sm text-slate-600">
-          <span>
-            第 {pageNum} / {totalPages} 页
-          </span>
-          <div className="flex gap-2">
-            <button
-              disabled={pageNum <= 1}
-              onClick={() => setPageNum((p) => p - 1)}
-              className="px-3 py-1 rounded-lg bg-slate-100 disabled:opacity-40 hover:bg-slate-200"
-            >
-              上一页
-            </button>
-            <button
-              disabled={pageNum >= totalPages}
-              onClick={() => setPageNum((p) => p + 1)}
-              className="px-3 py-1 rounded-lg bg-slate-100 disabled:opacity-40 hover:bg-slate-200"
-            >
-              下一页
-            </button>
-          </div>
-        </div>
+        <Pagination
+          page={pageNum}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPageNum}
+          onPageSizeChange={(s) => {
+            setPageSize(s)
+            setPageNum(1)
+          }}
+          className="border-t border-slate-100"
+        />
       </div>
     </div>
   )

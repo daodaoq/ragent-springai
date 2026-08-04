@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts'
 import { useChart } from '../components/useChart'
 import {
   getChunkSettings,
   getQualityReport,
-  getQueryStages,
+  getQueryLogs,
   runEval,
-  saveQueryStages,
   updateChunkSettings,
 } from '../api/quality'
 import type {
@@ -15,10 +14,14 @@ import type {
   DocQuality,
   EvalReport,
   QualityBucket,
-  QueryStageConfig,
+  QueryLogEntry,
+  QueryLogPage,
 } from '../api/quality'
 import { rechunkDocument } from '../api/kb'
 import type { ChunkParams } from '../api/kb'
+import Pagination from '../components/Pagination'
+import { usePagination } from '../hooks/usePagination'
+import { formatTime } from '../utils/format'
 
 /** 重新切片弹窗状态；semantic 三态：'default'=全局默认 / 'true' / 'false' */
 interface RechunkState {
@@ -61,19 +64,29 @@ export default function ChunkQualityPage() {
 
   const [rechunk, setRechunk] = useState<RechunkState | null>(null)
 
-  /** 查询处理管线编排（A-G 阶段启停/排序） */
-  const [stages, setStages] = useState<QueryStageConfig[]>([])
-  const [stageSaving, setStageSaving] = useState(false)
-  const [stageMsg, setStageMsg] = useState('')
-
-  /** RAG 评测：A/B 两路结果（off=原样检索基线，on=查询处理管线） */
+  /** RAG 评测：A/B 两路结果（off=原样检索基线，on=查询处理管线）；withAnswer=是否含回答生成+LLM 裁判（慢） */
   const [evalProcessed, setEvalProcessed] = useState(true)
+  const [evalWithAnswer, setEvalWithAnswer] = useState(true)
   const [evalCompare, setEvalCompare] = useState<{
     off: EvalReport | null
     on: EvalReport | null
     running: 'off' | 'on' | 'both' | null
     error: string
   }>({ off: null, on: null, running: null, error: '' })
+
+  // 文档明细表 / 评测用例表客户端分页
+  const docPaging = usePagination(report?.docs ?? [], 10)
+  const evalRows = evalCompare.off ? evalCompare.off.cases : (evalCompare.on?.cases ?? [])
+  const casePaging = usePagination(evalRows, 10)
+
+  /** 真实查询日志（自动采集每次 RAG 请求轨迹） */
+  const [queryLogs, setQueryLogs] = useState<QueryLogPage | null>(null)
+  const [logLoading, setLogLoading] = useState(false)
+  const [logMsg, setLogMsg] = useState('')
+  const [logPage, setLogPage] = useState(1)
+  const [logPageSize, setLogPageSize] = useState(10)
+  /** 展开查看某条日志的召回来源 + 回答 */
+  const [expandedLog, setExpandedLog] = useState<string | null>(null)
 
   const histRef = useRef<HTMLDivElement>(null)
   useChart(histRef, report?.lengthBuckets, buildHistogramOption)
@@ -95,17 +108,12 @@ export default function ChunkQualityPage() {
     } finally {
       setLoading(false)
     }
-    // 管线编排独立加载：失败不影响主页面
-    try {
-      const st = await getQueryStages()
-      setStages(st.data)
-    } catch {
-      // 忽略：编排卡显示为空
-    }
   }
 
   useEffect(() => {
     load()
+    loadQueryLogs(1, 10)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const saveSettings = async () => {
@@ -173,46 +181,15 @@ export default function ChunkQualityPage() {
     }
   }
 
-  // ==================== 查询处理管线编排 ====================
-
-  const toggleStage = (i: number) => {
-    setStages((prev) => prev.map((s, idx) => (idx === i ? { ...s, enabled: !s.enabled } : s)))
-  }
-
-  const moveStage = (i: number, dir: -1 | 1) => {
-    setStages((prev) => {
-      const j = i + dir
-      if (j < 0 || j >= prev.length) return prev
-      const copy = [...prev]
-      const tmp = copy[i]
-      copy[i] = copy[j]
-      copy[j] = tmp
-      return copy
-    })
-  }
-
-  const saveStages = async () => {
-    setStageSaving(true)
-    setStageMsg('')
-    try {
-      await saveQueryStages(stages.map((s, i) => ({ ...s, sortOrder: (i + 1) * 10 })))
-      setStageMsg('✅ 已保存，立即生效（无需重启）')
-    } catch (e) {
-      setStageMsg('⚠️ ' + (e instanceof Error ? e.message : '保存失败'))
-    } finally {
-      setStageSaving(false)
-    }
-  }
-
   // ==================== RAG 评测（A/B） ====================
 
   const runEvalOnce = async (processed: boolean): Promise<EvalReport> => {
-    const res = await runEval({ processed })
+    const res = await runEval({ processed, withAnswer: evalWithAnswer })
     return res.data
   }
 
   /** 按当前开关跑一次评测 */
-  const runEval = async () => {
+  const runSingleEval = async () => {
     const key = evalProcessed ? 'on' : 'off'
     setEvalCompare((s) => ({ ...s, running: key, error: '', [key]: null }))
     try {
@@ -244,14 +221,43 @@ export default function ChunkQualityPage() {
   }
 
   const evalMetricRows = [
-    { label: 'Recall@5', off: evalCompare.off?.retrieval.recallAt5, on: evalCompare.on?.retrieval.recallAt5 },
-    { label: 'Precision@5', off: evalCompare.off?.retrieval.precisionAt5, on: evalCompare.on?.retrieval.precisionAt5 },
-    { label: 'MRR@5', off: evalCompare.off?.retrieval.mrrAt5, on: evalCompare.on?.retrieval.mrrAt5 },
-    { label: 'NDCG@5', off: evalCompare.off?.retrieval.ndcgAt5, on: evalCompare.on?.retrieval.ndcgAt5 },
-    { label: '忠实度', off: evalCompare.off?.answer.avgFaithfulness, on: evalCompare.on?.answer.avgFaithfulness },
-    { label: '相关性', off: evalCompare.off?.answer.avgRelevance, on: evalCompare.on?.answer.avgRelevance },
-    { label: '引用率', off: evalCompare.off?.answer.citationRate, on: evalCompare.on?.answer.citationRate },
+    { label: 'Recall@5', kind: 'retrieval', off: evalCompare.off?.retrieval.recallAt5, on: evalCompare.on?.retrieval.recallAt5 },
+    { label: 'Precision@5', kind: 'retrieval', off: evalCompare.off?.retrieval.precisionAt5, on: evalCompare.on?.retrieval.precisionAt5 },
+    { label: 'MRR@5', kind: 'retrieval', off: evalCompare.off?.retrieval.mrrAt5, on: evalCompare.on?.retrieval.mrrAt5 },
+    { label: 'NDCG@5', kind: 'retrieval', off: evalCompare.off?.retrieval.ndcgAt5, on: evalCompare.on?.retrieval.ndcgAt5 },
+    { label: '忠实度', kind: 'answer', off: evalCompare.off?.answer.avgFaithfulness, on: evalCompare.on?.answer.avgFaithfulness },
+    { label: '相关性', kind: 'answer', off: evalCompare.off?.answer.avgRelevance, on: evalCompare.on?.answer.avgRelevance },
+    { label: '引用率', kind: 'answer', off: evalCompare.off?.answer.citationRate, on: evalCompare.on?.answer.citationRate },
   ]
+  const visibleEvalMetrics = evalMetricRows.filter((m) => evalWithAnswer || m.kind === 'retrieval')
+
+  const loadQueryLogs = async (p = logPage, s = logPageSize) => {
+    setLogLoading(true)
+    setLogMsg('')
+    try {
+      const res = await getQueryLogs(p, s)
+      setQueryLogs(res.data)
+      setLogPage(p)
+    } catch (e) {
+      setLogMsg(e instanceof Error ? e.message : '加载查询日志失败')
+    } finally {
+      setLogLoading(false)
+    }
+  }
+
+  /** 解析来源 JSON，返回来源条数 */
+  const sourcesCount = (r: QueryLogEntry) => parseSources(r).length
+
+  /** 解析来源 JSON 为可展示列表 */
+  const parseSources = (r: QueryLogEntry): { filename: string; score?: number; headingPath?: string; excerpt?: string }[] => {
+    if (!r.sources) return []
+    try {
+      const arr = JSON.parse(r.sources)
+      return Array.isArray(arr) ? arr : []
+    } catch {
+      return []
+    }
+  }
 
   const effMax = (d: DocQuality) => (d.maxChunkChars != null ? d.maxChunkChars : settings?.maxChunkChars)
   const effSemantic = (d: DocQuality) =>
@@ -374,7 +380,7 @@ export default function ChunkQualityPage() {
                       </td>
                     </tr>
                   )}
-                  {report.docs.map((d) => (
+                  {docPaging.paged.map((d) => (
                     <tr key={d.docId} className="hover:bg-slate-50">
                       <td className="px-4 py-3 text-slate-800 max-w-[180px] truncate" title={d.filename}>
                         {d.filename}
@@ -424,70 +430,17 @@ export default function ChunkQualityPage() {
                 </tbody>
               </table>
             </div>
-          </div>
-
-          {/* 查询处理管线编排 */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 mb-5">
-            <div className="flex items-center justify-between mb-1">
-              <h2 className="font-bold text-slate-800">🔧 查询处理管线编排</h2>
-              <div className="flex items-center gap-3">
-                {stageMsg && <span className="text-xs text-slate-500">{stageMsg}</span>}
-                <button
-                  onClick={saveStages}
-                  disabled={stageSaving || stages.length === 0}
-                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60"
-                >
-                  {stageSaving ? '保存中…' : '保存'}
-                </button>
-              </div>
-            </div>
-            <p className="text-xs text-slate-400 mb-3">
-              检索前的 A-G 优化流程：可独立启停、调整顺序，保存后立即生效（无需重启）。↓ 决定下一次 RAG 检索的管线。
-            </p>
-            {stages.length === 0 ? (
-              <div className="text-sm text-slate-400 py-4 text-center">管线配置加载失败或为空</div>
-            ) : (
-              <div className="space-y-2">
-                {stages.map((s, i) => (
-                  <div
-                    key={s.name}
-                    className={`flex items-center gap-3 border rounded-lg px-3 py-2 ${
-                      s.enabled ? 'border-slate-200' : 'border-slate-100 opacity-50'
-                    }`}
-                  >
-                    <div className="flex flex-col text-slate-400">
-                      <button
-                        onClick={() => moveStage(i, -1)}
-                        disabled={i === 0}
-                        className="text-xs leading-none hover:text-blue-600 disabled:opacity-30"
-                      >
-                        ↑
-                      </button>
-                      <button
-                        onClick={() => moveStage(i, 1)}
-                        disabled={i === stages.length - 1}
-                        className="text-xs leading-none mt-1 hover:text-blue-600 disabled:opacity-30"
-                      >
-                        ↓
-                      </button>
-                    </div>
-                    <span className="text-xs font-mono text-slate-400 w-5">{i + 1}</span>
-                    <label className="flex items-center gap-2 flex-1 min-w-0 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        className="accent-blue-600"
-                        checked={s.enabled}
-                        onChange={() => toggleStage(i)}
-                      />
-                      <span className={`text-sm font-medium ${s.enabled ? 'text-slate-800' : 'text-slate-400'}`}>
-                        {s.name}
-                      </span>
-                      <span className="text-xs text-slate-400 truncate">{s.description}</span>
-                    </label>
-                  </div>
-                ))}
-              </div>
-            )}
+            <Pagination
+              page={docPaging.page}
+              pageSize={docPaging.pageSize}
+              total={docPaging.total}
+              onPageChange={docPaging.setPage}
+              onPageSizeChange={(s) => {
+                docPaging.setPageSize(s)
+                docPaging.setPage(1)
+              }}
+              className="border-t border-slate-100"
+            />
           </div>
 
           {/* RAG 评测 */}
@@ -504,8 +457,20 @@ export default function ChunkQualityPage() {
                   />
                   查询处理（改写/多查询/HyDE/实体）
                 </label>
+                <label
+                  className="flex items-center gap-2 text-sm text-slate-600"
+                  title="关闭后仅算检索指标（Recall/MRR/NDCG），跳过回答生成与 LLM 裁判，几十秒跑完"
+                >
+                  <input
+                    type="checkbox"
+                    className="accent-violet-600"
+                    checked={evalWithAnswer}
+                    onChange={(e) => setEvalWithAnswer(e.target.checked)}
+                  />
+                  含回答打分（慢）
+                </label>
                 <button
-                  onClick={runEval}
+                  onClick={runSingleEval}
                   disabled={evalCompare.running != null}
                   className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 disabled:opacity-60"
                 >
@@ -531,7 +496,7 @@ export default function ChunkQualityPage() {
                   </div>
                 )}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-3">
-                  {evalMetricRows.map((m) => (
+                  {visibleEvalMetrics.map((m) => (
                     <div key={m.label} className="border border-slate-200 rounded-lg px-3 py-2">
                       <div className="text-xs text-slate-400">{m.label}</div>
                       {m.off != null && m.on != null ? (
@@ -563,52 +528,182 @@ export default function ChunkQualityPage() {
                           <>
                             <th className="text-left px-3 py-2 font-medium">Recall（原样→处理）</th>
                             <th className="text-left px-3 py-2 font-medium">MRR（原样→处理）</th>
-                            <th className="text-left px-3 py-2 font-medium">忠实度（原样→处理）</th>
+                            {evalWithAnswer && <th className="text-left px-3 py-2 font-medium">忠实度（原样→处理）</th>}
                           </>
                         ) : (
                           <>
                             <th className="text-left px-3 py-2 font-medium">Recall</th>
                             <th className="text-left px-3 py-2 font-medium">MRR</th>
-                            <th className="text-left px-3 py-2 font-medium">忠实度</th>
+                            {evalWithAnswer && <th className="text-left px-3 py-2 font-medium">忠实度</th>}
                           </>
                         )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {(evalCompare.off && evalCompare.on
-                        ? evalCompare.off.cases.map((c, i) => {
-                            const co = evalCompare.on?.cases[i]
-                            return (
-                              <tr key={i} className="hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-700 max-w-[280px] truncate" title={c.question}>
-                                  {c.question}
-                                </td>
-                                <td className="px-3 py-2 text-slate-700">
-                                  {c.recall.toFixed(2)} → {co?.recall.toFixed(2)}
-                                </td>
-                                <td className="px-3 py-2 text-slate-700">
-                                  {c.mrr.toFixed(2)} → {co?.mrr.toFixed(2)}
-                                </td>
-                                <td className="px-3 py-2 text-slate-700">
-                                  {c.faithfulness} → {co?.faithfulness}
-                                </td>
-                              </tr>
-                            )
-                          })
-                        : (evalCompare.off ?? evalCompare.on)!.cases.map((c, i) => (
-                            <tr key={i} className="hover:bg-slate-50">
-                              <td className="px-3 py-2 text-slate-700 max-w-[280px] truncate" title={c.question}>
-                                {c.question}
+                      {casePaging.paged.map((c, localIdx) => {
+                        const globalIdx = (casePaging.page - 1) * casePaging.pageSize + localIdx
+                        const co = evalCompare.on?.cases[globalIdx]
+                        return evalCompare.off && evalCompare.on ? (
+                          <tr key={globalIdx} className="hover:bg-slate-50">
+                            <td className="px-3 py-2 text-slate-700 max-w-[280px] truncate" title={c.question}>
+                              {c.question}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700">
+                              {c.recall.toFixed(2)} → {co?.recall.toFixed(2)}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700">
+                              {c.mrr.toFixed(2)} → {co?.mrr.toFixed(2)}
+                            </td>
+                            {evalWithAnswer && (
+                              <td className="px-3 py-2 text-slate-700">
+                                {c.faithfulness} → {co?.faithfulness}
                               </td>
-                              <td className="px-3 py-2 text-slate-700">{c.recall.toFixed(2)}</td>
-                              <td className="px-3 py-2 text-slate-700">{c.mrr.toFixed(2)}</td>
-                              <td className="px-3 py-2 text-slate-700">{c.faithfulness}</td>
-                            </tr>
-                          )))}
+                            )}
+                          </tr>
+                        ) : (
+                          <tr key={globalIdx} className="hover:bg-slate-50">
+                            <td className="px-3 py-2 text-slate-700 max-w-[280px] truncate" title={c.question}>
+                              {c.question}
+                            </td>
+                            <td className="px-3 py-2 text-slate-700">{c.recall.toFixed(2)}</td>
+                            <td className="px-3 py-2 text-slate-700">{c.mrr.toFixed(2)}</td>
+                            {evalWithAnswer && <td className="px-3 py-2 text-slate-700">{c.faithfulness}</td>}
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
+                <Pagination
+                  page={casePaging.page}
+                  pageSize={casePaging.pageSize}
+                  total={casePaging.total}
+                  onPageChange={casePaging.setPage}
+                  onPageSizeChange={(s) => {
+                    casePaging.setPageSize(s)
+                    casePaging.setPage(1)
+                  }}
+                  className="border-t border-slate-100"
+                />
               </div>
+            )}
+          </div>
+
+          {/* 真实查询日志（自动采集） */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-5">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+              <h2 className="font-bold text-slate-800">📊 真实查询日志</h2>
+              <div className="flex items-center gap-3">
+                {logMsg && <span className="text-xs text-amber-600">{logMsg}</span>}
+                <button
+                  onClick={() => loadQueryLogs()}
+                  disabled={logLoading}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-60"
+                >
+                  {logLoading ? '加载中…' : '刷新'}
+                </button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="text-left px-4 py-3 font-medium">问题</th>
+                    <th className="text-left px-4 py-3 font-medium">意图</th>
+                    <th className="text-left px-4 py-3 font-medium">改写查询</th>
+                    <th className="text-left px-4 py-3 font-medium">来源</th>
+                    <th className="text-left px-4 py-3 font-medium">耗时</th>
+                    <th className="text-left px-4 py-3 font-medium">时间</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {queryLogs &&
+                    queryLogs.records.map((r) => (
+                      <Fragment key={r.id}>
+                        <tr
+                          onClick={() => setExpandedLog(expandedLog === r.id ? null : r.id)}
+                          className={`hover:bg-slate-50 cursor-pointer transition-colors ${expandedLog === r.id ? 'bg-blue-50/40' : ''}`}
+                          title="点击查看召回来源与回答"
+                        >
+                          <td className="px-4 py-3 max-w-[220px] truncate">{r.question}</td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-xs ${
+                                r.gated ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
+                              }`}
+                            >
+                              {r.intent ?? '—'}
+                              {r.gated ? ' ⛔' : ''}
+                            </span>
+                          </td>
+                          <td
+                            className="px-4 py-3 max-w-[200px] truncate text-slate-500"
+                            title={r.rewrittenQuery ?? ''}
+                          >
+                            {r.rewrittenQuery || '—'}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">{sourcesCount(r)}</td>
+                          <td className="px-4 py-3 text-slate-500">
+                            {r.latencyMs != null ? `${r.latencyMs}ms` : '—'}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">
+                            {formatTime(r.createdAt)}
+                          </td>
+                        </tr>
+                        {expandedLog === r.id && (
+                          <tr className="bg-slate-50/70">
+                            <td colSpan={6} className="px-4 py-3">
+                              {parseSources(r).length > 0 && (
+                                <div className="mb-2">
+                                  <div className="text-xs text-slate-400 mb-1">
+                                    召回来源（{parseSources(r).length}）
+                                  </div>
+                                  <div className="space-y-1">
+                                    {parseSources(r).map((s, i) => (
+                                      <div key={i} className="text-xs text-slate-600">
+                                        [{i + 1}] {s.filename}
+                                        {s.score != null ? ` · 相关度 ${s.score.toFixed(2)}` : ''}
+                                        {s.headingPath ? ` · 📑 ${s.headingPath}` : ''}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {r.answer && (
+                                <div>
+                                  <div className="text-xs text-slate-400 mb-1">AI 回答</div>
+                                  <div className="text-xs text-slate-600 whitespace-pre-wrap line-clamp-4">
+                                    {r.answer}
+                                  </div>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  {(!queryLogs || queryLogs.records.length === 0) && (
+                    <tr>
+                      <td colSpan={6} className="text-center py-8 text-slate-400">
+                        暂无查询记录 —— 去「AI 助手」问一个问题，就会自动采集到这里
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {queryLogs && queryLogs.total > 0 && (
+              <Pagination
+                page={queryLogs.current}
+                pageSize={queryLogs.size}
+                total={queryLogs.total}
+                onPageChange={(p) => loadQueryLogs(p, logPageSize)}
+                onPageSizeChange={(s) => {
+                  setLogPageSize(s)
+                  loadQueryLogs(1, s)
+                }}
+                className="border-t border-slate-100"
+              />
             )}
           </div>
         </>

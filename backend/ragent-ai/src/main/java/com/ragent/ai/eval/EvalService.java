@@ -10,11 +10,19 @@ import java.util.List;
 public interface EvalService {
 
     /**
-     * 运行评测。
+     * 运行评测（含回答生成与 LLM 裁判打分）。
      *
      * @param processed true=检索走查询处理管线（改写/多查询/HyDE/实体）；false=原样检索（A/B 基线）
      */
     EvalReport run(boolean processed);
+
+    /**
+     * 运行评测。
+     *
+     * @param processed  true=检索走查询处理管线；false=原样检索（A/B 基线）
+     * @param withAnswer true=含回答生成 + LLM 裁判打分（慢，10 用例可能数分钟）；false=仅检索指标（几十秒，A/B 快速对比用）
+     */
+    EvalReport run(boolean processed, boolean withAnswer);
 
     // ==================== 数据结构 ====================
 

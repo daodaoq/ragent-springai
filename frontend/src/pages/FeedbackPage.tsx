@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getFeedbackList } from '../api/feedback'
 import { getFeedbackStats } from '../api/stats'
+import Pagination from '../components/Pagination'
 import { useAuthStore } from '../store/auth'
 import { formatTime } from '../utils/format'
 import type { FeedbackRecord, FeedbackStats } from '../types'
@@ -174,36 +175,15 @@ export default function FeedbackPage() {
       )}
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 pt-2">
-          <button
-            disabled={page <= 1}
-            onClick={() => load(rating, page - 1, pageSize)}
-            className="px-3 py-1 rounded border border-slate-300 text-sm disabled:opacity-40"
-          >
-            上一页
-          </button>
-          <span className="text-sm text-slate-500">
-            {page} / {totalPages}
-          </span>
-          <button
-            disabled={page >= totalPages}
-            onClick={() => load(rating, page + 1, pageSize)}
-            className="px-3 py-1 rounded border border-slate-300 text-sm disabled:opacity-40"
-          >
-            下一页
-          </button>
-          <select
-            value={pageSize}
-            onChange={(e) => setPageSize(Number(e.target.value))}
-            className="ml-2 border border-slate-300 rounded px-2 py-1 text-sm"
-          >
-            {PAGE_SIZES.map((s) => (
-              <option key={s} value={s}>
-                {s} 条/页
-              </option>
-            ))}
-          </select>
-        </div>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={(p) => load(rating, p, pageSize)}
+          onPageSizeChange={setPageSize}
+          pageSizeOptions={PAGE_SIZES}
+          className="pt-2"
+        />
       )}
     </div>
   )

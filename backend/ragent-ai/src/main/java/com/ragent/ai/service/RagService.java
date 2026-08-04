@@ -29,9 +29,11 @@ public interface RagService {
 
     /**
      * RAG 流式接口（P6）：先发 rewritten（查询处理轨迹）→ sources（来源）→ content（回答）。
-     * 接入多轮记忆：改写消解指代、回答后写回记忆。
+     * 接入多轮记忆：改写消解指代、回答后写回记忆；后台异步落库查询日志。
+     *
+     * @param userId 登录用户 ID（未登录为 null），由 ragent-web 控制器从 Sa-Token 解析传入
      */
-    Flux<ServerSentEvent<String>> ragStream(String question, String conversationId);
+    Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId);
 
     record SourceItem(int idx, String filename, String excerpt, Double score,
                       String headingPath, Integer lineStart, Integer lineEnd, Integer page,

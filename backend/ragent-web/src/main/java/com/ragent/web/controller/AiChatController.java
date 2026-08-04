@@ -1,5 +1,6 @@
 package com.ragent.web.controller;
 
+import cn.dev33.satoken.stp.StpUtil;
 import com.ragent.common.result.Result;
 import com.ragent.web.service.AgentService;
 import com.ragent.ai.service.ChatMemoryService;
@@ -34,10 +35,21 @@ public class AiChatController {
         return chatService.stream(request.message() == null ? "" : request.message(), request.conversationId());
     }
 
-    /** RAG 知识库问答流式（P6 起带多轮记忆：先 rewritten 事件，再 sources，再 content） */
+    /** RAG 知识库问答流式（P6 起带多轮记忆 + 查询日志：先 rewritten 事件，再 sources，再 content） */
     @PostMapping(value = "/rag/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> ragStream(@RequestBody ChatRequest request) {
-        return ragService.ragStream(request.message() == null ? "" : request.message(), request.conversationId());
+        return ragService.ragStream(request.message() == null ? "" : request.message(),
+                request.conversationId(), currentUserId());
+    }
+
+    /** 当前登录用户 ID（RAG 端点公开可访问，未登录返回 null；仅用于查询日志归属） */
+    private Long currentUserId() {
+        try {
+            Object id = StpUtil.getLoginIdDefaultNull();
+            return id == null ? null : Long.valueOf(id.toString());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** Agent 智能体流式（工具调用事件 tool-call + 最终答案 content） */

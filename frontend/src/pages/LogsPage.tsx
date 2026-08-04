@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listLogs } from '../api/logs'
 import type { LogEntry } from '../api/logs'
+import Pagination from '../components/Pagination'
+
 
 const LEVEL_COLORS: Record<string, string> = {
   ERROR: 'text-red-600 bg-red-50',
@@ -223,43 +225,17 @@ export default function LogsPage() {
         </div>
 
         {/* 分页 */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 text-sm text-slate-600">
-          <div className="flex items-center gap-3">
-            <span>
-              第 {pageNum} / {totalPages || 1} 页
-            </span>
-            <select
-              className="border border-slate-300 rounded px-2 py-1 text-xs"
-              value={pageSize}
-              onChange={(e) => {
-                setPageSize(Number(e.target.value))
-                setPageNum(1)
-              }}
-            >
-              {[10, 20, 50, 100].map((n) => (
-                <option key={n} value={n}>
-                  每页 {n} 条
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex gap-2">
-            <button
-              disabled={pageNum <= 1}
-              onClick={() => setPageNum((p) => p - 1)}
-              className="px-3 py-1 rounded-lg bg-slate-100 disabled:opacity-40 hover:bg-slate-200"
-            >
-              上一页
-            </button>
-            <button
-              disabled={pageNum >= totalPages}
-              onClick={() => setPageNum((p) => p + 1)}
-              className="px-3 py-1 rounded-lg bg-slate-100 disabled:opacity-40 hover:bg-slate-200"
-            >
-              下一页
-            </button>
-          </div>
-        </div>
+        <Pagination
+          page={pageNum}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPageNum}
+          onPageSizeChange={(s) => {
+            setPageSize(s)
+            setPageNum(1)
+          }}
+          className="border-t border-slate-100"
+        />
       </div>
     </div>
   )

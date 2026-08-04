@@ -114,5 +114,34 @@ export interface EvalReport {
  * 运行内置 RAG 评测（同步较慢：会真实检索+LLM 打分 10 个用例，单次可能 >15s，故放宽超时）。
  * params.processed=true 走查询处理管线（默认），false 为原样检索基线（A/B 用）。
  */
-export const runEval = (params?: { processed?: boolean }) =>
-  http.post('/eval/run', params, { timeout: 120000 }) as Promise<ApiResult<EvalReport>>
+export const runEval = (params?: { processed?: boolean; withAnswer?: boolean }) =>
+  http.post('/eval/run', params, { timeout: 300000 }) as Promise<ApiResult<EvalReport>>
+
+// ---------------- 真实查询日志（/kb/query-log，自动采集每次 RAG 请求轨迹） ----------------
+
+export interface QueryLogEntry {
+  id: string
+  userId: string | null
+  conversationId: string | null
+  question: string
+  intent: string | null
+  rewrittenQuery: string | null
+  gated: boolean
+  /** 召回来源 JSON 字符串（含 filename/documentId/score） */
+  sources: string | null
+  answer: string | null
+  latencyMs: number | null
+  error: string | null
+  createdAt: string
+}
+
+export interface QueryLogPage {
+  records: QueryLogEntry[]
+  total: number
+  size: number
+  current: number
+  pages: number
+}
+
+export const getQueryLogs = (pageNum = 1, pageSize = 10) =>
+  http.get('/kb/query-log', { params: { pageNum, pageSize } }) as Promise<ApiResult<QueryLogPage>>

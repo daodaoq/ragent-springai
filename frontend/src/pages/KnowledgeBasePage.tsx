@@ -15,6 +15,8 @@ import {
   type UploadResult,
 } from '../api/kb'
 import { getChunkSettings } from '../api/quality'
+import Pagination from '../components/Pagination'
+import { usePagination } from '../hooks/usePagination'
 import { useAuthStore } from '../store/auth'
 import { formatTime } from '../utils/format'
 
@@ -77,6 +79,9 @@ export default function KnowledgeBasePage() {
       setError(err instanceof Error ? err.message : '加载失败')
     }
   }, [])
+
+  // 文档表客户端分页（列表每次全量返回，前端切片展示）
+  const docPaging = usePagination(docs, 10)
 
   useEffect(() => {
     load()
@@ -406,7 +411,7 @@ export default function KnowledgeBasePage() {
               </tr>
             </thead>
             <tbody>
-              {docs.map((d) => (
+              {docPaging.paged.map((d) => (
                 <tr key={d.id} className="border-b border-slate-100">
                   <td className="px-4 py-3">
                     <input
@@ -449,6 +454,19 @@ export default function KnowledgeBasePage() {
               ))}
             </tbody>
           </table>
+        )}
+        {docs.length > 0 && (
+          <Pagination
+            page={docPaging.page}
+            pageSize={docPaging.pageSize}
+            total={docPaging.total}
+            onPageChange={docPaging.setPage}
+            onPageSizeChange={(s) => {
+              docPaging.setPageSize(s)
+              docPaging.setPage(1)
+            }}
+            className="border-t border-slate-200"
+          />
         )}
       </div>
 

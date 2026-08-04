@@ -21,9 +21,11 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -50,11 +52,16 @@ public class EvalServiceImpl implements EvalService {
 
     @Override
     public EvalReport run(boolean processed) {
+        return run(processed, true);
+    }
+
+    @Override
+    public EvalReport run(boolean processed, boolean withAnswer) {
         Map<String, Long> docIdByFile = seedDocs();
         List<EvalCase> cases = loadCases();
         List<CaseResult> results = new ArrayList<>();
         for (EvalCase c : cases) {
-            results.add(runCase(c, docIdByFile, processed));
+            results.add(runCase(c, docIdByFile, processed, withAnswer));
         }
         return aggregate(results);
     }
@@ -87,7 +94,7 @@ public class EvalServiceImpl implements EvalService {
         }
     }
 
-    private CaseResult runCase(EvalCase c, Map<String, Long> docIdByFile, boolean processed) {
+    private CaseResult runCase(EvalCase c, Map<String, Long> docIdByFile, boolean processed, boolean withAnswer) {
         List<Long> relevantDocIds = c.docs().stream()
                 .map(docIdByFile::get)
                 .filter(Objects::nonNull)
@@ -95,9 +102,13 @@ public class EvalServiceImpl implements EvalService {
 
         // 1. 检索（processed 走查询处理管线，gateByIntent=false）
         List<Document> retrieved = ragService.retrieve(c.question(), TOP_K, processed);
-        List<Boolean> relevant = retrieved.stream()
-                .map(d -> relevantDocIds.contains(parseLong(d.getMetadata().get("documentId"))))
-                .toList();
+        // 2. 文档级相关性：同一期望文档的多个切片只算第一个命中（否则 recall 会因切片数而 >1，指标失真）
+        Set<Long> seenRelevant = new HashSet<>();
+        List<Boolean> relevant = new ArrayList<>();
+        for (Document d : retrieved) {
+            Long docId = parseLong(d.getMetadata().get("documentId"));
+            relevant.add(relevantDocIds.contains(docId) && seenRelevant.add(docId));
+        }
 
         // 2. 指标
         double recall = recallAtK(relevant, relevantDocIds.size());
@@ -105,7 +116,10 @@ public class EvalServiceImpl implements EvalService {
         double mrr = mrr(relevant);
         double ndcg = ndcgAtK(relevant, TOP_K);
 
-        // 3. 生成回答 + 裁判打分
+        // 3. 生成回答 + 裁判打分（仅检索模式跳过，A/B 快速对比）
+        if (!withAnswer) {
+            return new CaseResult(c.question(), c.docs(), recall, precision, mrr, ndcg, 0, 0, null);
+        }
         String answer = ragService.answerSync(c.question(), retrieved);
         String context = buildJudgeContext(retrieved);
         JudgeScores scores = judge(c.question(), context, answer);

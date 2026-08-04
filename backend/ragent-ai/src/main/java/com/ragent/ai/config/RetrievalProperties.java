@@ -46,4 +46,7 @@ public class RetrievalProperties {
 
     /** F 喂给改写的最近用户轮数 */
     private int contextTurnCount = 3;
+
+    /** 查询日志采集开关（每次 RAG 请求后台异步落库 rag_query_log，供评测集挖掘/质量分析） */
+    private boolean queryLogEnabled = true;
 }

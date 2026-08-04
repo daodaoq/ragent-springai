@@ -28,8 +28,8 @@ import java.util.regex.Pattern;
 @Service
 public class RetrievalServiceImpl implements RetrievalService {
 
-    /** MySQL BOOLEAN 模式运算符，需从用户查询中剔除，避免 SQL 1064 */
-    private static final Pattern BOOLEAN_OP = Pattern.compile("[+\\-<>( )~*\"@]");
+    /** 干扰 ngram 切分的标点（含全角），从关键词查询中剔除；NATURAL LANGUAGE 模式下无需保留任何运算符 */
+    private static final Pattern NOISE_PUNCT = Pattern.compile("[+\\-<>()~*\"@，。？！；：、（）《》“”‘’【】…·]");
 
     private final VectorStore vectorStore;
     private final DocumentChunkMapper chunkMapper;
@@ -198,11 +198,11 @@ public class RetrievalServiceImpl implements RetrievalService {
         return new ArrayList<>(list.subList(0, topK));
     }
 
-    /** 剔除 MySQL 布尔模式运算符，避免用户输入（未闭合引号等）导致 SQL 1064。 */
+    /** 剔除标点并合并空白，得到干净的 ngram 查询串。 */
     private static String sanitizeKeyword(String q) {
         if (q == null) {
             return "";
         }
-        return BOOLEAN_OP.matcher(q).replaceAll(" ").replaceAll("\\s+", " ").trim();
+        return NOISE_PUNCT.matcher(q).replaceAll(" ").replaceAll("\\s+", " ").trim();
     }
 }

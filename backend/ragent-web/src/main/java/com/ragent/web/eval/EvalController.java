@@ -22,9 +22,10 @@ public class EvalController {
     @PostMapping("/run")
     public Result<EvalService.EvalReport> run(@RequestBody(required = false) EvalRunRequest req) {
         boolean processed = req == null || req.processed();
-        return Result.success(evalService.run(processed));
+        boolean withAnswer = req == null || req.withAnswer() == null || req.withAnswer();
+        return Result.success(evalService.run(processed, withAnswer));
     }
 
-    public record EvalRunRequest(boolean processed) {
+    public record EvalRunRequest(boolean processed, Boolean withAnswer) {
     }
 }

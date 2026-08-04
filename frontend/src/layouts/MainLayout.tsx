@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { Link, Outlet, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 
@@ -5,6 +6,48 @@ const roleLabel: Record<string, string> = {
   STUDENT: '学生',
   TEACHER: '教师',
   ADMIN: '管理员',
+}
+
+/** 下拉菜单：触发按钮 + 绝对定位的菜单项列表；点击外部自动收起 */
+function Dropdown({ label, items }: { label: string; items: { label: string; to: string }[] }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [])
+
+  if (items.length === 0) return null
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`flex items-center gap-1 hover:text-blue-600 ${open ? 'text-blue-600' : ''}`}
+      >
+        {label}
+        <span className="text-[9px] leading-none">▾</span>
+      </button>
+      {open && (
+        <div className="absolute left-0 mt-2 w-44 bg-white border border-slate-200 rounded-lg shadow-lg py-1 z-20">
+          {items.map((it) => (
+            <Link
+              key={it.to}
+              to={it.to}
+              onClick={() => setOpen(false)}
+              className="block px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 hover:text-blue-600"
+            >
+              {it.label}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function MainLayout() {
@@ -15,6 +58,9 @@ export default function MainLayout() {
     await logout()
     navigate('/login')
   }
+
+  const isStaff = user && (user.role === 'ADMIN' || user.role === 'TEACHER')
+  const isAdmin = user && user.role === 'ADMIN'
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -31,38 +77,35 @@ export default function MainLayout() {
               <Link to="/ai" className="hover:text-blue-600">
                 AI 助手
               </Link>
-              <Link to="/kb" className="hover:text-blue-600">
-                知识库
-              </Link>
-              {user && (
-                <Link to="/kb/quality" className="hover:text-blue-600">
-                  切片质量
-                </Link>
-              )}
-              {user && (
-                <Link to="/dashboard" className="hover:text-blue-600">
-                  数据看板
-                </Link>
-              )}
-              {user && (user.role === 'ADMIN' || user.role === 'TEACHER') && (
-                <Link to="/feedback" className="hover:text-blue-600">
-                  AI 反馈
-                </Link>
-              )}
               {user && (
                 <Link to="/ask" className="hover:text-blue-600">
                   我要提问
                 </Link>
               )}
-              {user && user.role === 'ADMIN' && (
-                <Link to="/users" className="hover:text-blue-600">
-                  用户管理
-                </Link>
+              {user && (
+                <Dropdown
+                  label="知识库"
+                  items={[
+                    { label: '文档管理', to: '/kb' },
+                    { label: '切片质量', to: '/kb/quality' },
+                    { label: '检索管线', to: '/kb/pipeline' },
+                  ]}
+                />
               )}
-              {user && user.role === 'ADMIN' && (
-                <Link to="/logs" className="hover:text-blue-600">
-                  系统日志
-                </Link>
+              {user && (
+                <Dropdown
+                  label="管理"
+                  items={[
+                    { label: '数据看板', to: '/dashboard' },
+                    ...(isStaff ? [{ label: 'AI 反馈', to: '/feedback' }] : []),
+                    ...(isAdmin
+                      ? [
+                          { label: '用户管理', to: '/users' },
+                          { label: '系统日志', to: '/logs' },
+                        ]
+                      : []),
+                  ]}
+                />
               )}
             </nav>
           </div>

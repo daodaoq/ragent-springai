@@ -145,4 +145,25 @@ CREATE TABLE IF NOT EXISTS `kb_query_stage` (
   UNIQUE KEY `uk_name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='查询处理管线阶段配置';
 
+-- ============================================
+-- P6: RAG 查询日志（自动采集真实查询轨迹，供评测/质量分析）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `rag_query_log` (
+  `id`              BIGINT       NOT NULL COMMENT '主键(雪花ID)',
+  `user_id`         BIGINT       DEFAULT NULL COMMENT '登录用户ID(未登录为NULL)',
+  `conversation_id` VARCHAR(64)  DEFAULT NULL COMMENT '会话ID',
+  `question`        TEXT         NOT NULL COMMENT '原始问题',
+  `intent`          VARCHAR(20)  DEFAULT NULL COMMENT '意图: RAG/CHAT/OTHER',
+  `rewritten_query` TEXT         DEFAULT NULL COMMENT '改写后检索查询',
+  `gated`           TINYINT      NOT NULL DEFAULT 0 COMMENT '意图门禁拦截: 0否 1是',
+  `sources`         MEDIUMTEXT   DEFAULT NULL COMMENT '召回来源JSON(含filename/documentId/score)',
+  `answer`          MEDIUMTEXT   DEFAULT NULL COMMENT 'AI回答',
+  `latency_ms`      INT          DEFAULT NULL COMMENT '总耗时ms',
+  `error`           VARCHAR(500) DEFAULT NULL COMMENT '异常信息(若失败)',
+  `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_created_at` (`created_at`),
+  KEY `idx_user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 查询日志';
+
 -- 注意: 初始管理员账号见 sql/seed_admin.sql（一次性手动执行）
