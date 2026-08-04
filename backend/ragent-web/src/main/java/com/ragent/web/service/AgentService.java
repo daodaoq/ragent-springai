@@ -64,7 +64,7 @@ public class AgentService {
     public Flux<ServerSentEvent<String>> agentStream(String question, String conversationId) {
         return Flux.defer(() -> Flux.fromIterable(runLoop(question, conversationId)))
                 .subscribeOn(Schedulers.boundedElastic())
-                .onErrorResume(e -> Flux.just(sse("content", "⚠️ Agent 服务出错：" + e.getMessage())));
+                .onErrorResume(e -> Flux.just(sse("content", "⚠️ " + AiRetry.friendlyMessage(e))));
     }
 
     private List<ServerSentEvent<String>> runLoop(String question, String conversationId) {
@@ -87,12 +87,12 @@ public class AgentService {
 
         List<ServerSentEvent<String>> events = new ArrayList<>();
         for (int round = 0; round < MAX_ROUNDS; round++) {
-            ChatResponse response = chatClient.prompt()
+            ChatResponse response = AiRetry.callWithRetry(() -> chatClient.prompt()
                     .system(SYSTEM_PROMPT)
                     .messages(messages)
                     .options(options)
                     .call()
-                    .chatResponse();
+                    .chatResponse());
             AssistantMessage output = response.getResult().getOutput();
             if (output.hasToolCalls()) {
                 List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();

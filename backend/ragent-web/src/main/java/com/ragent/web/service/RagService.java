@@ -63,12 +63,11 @@ public class RagService {
         if (chatClient == null) {
             return Flux.just("⚠️ AI 助手未配置，请先配置 DeepSeek API Key。");
         }
-        return chatClient.prompt()
+        return AiRetry.streamWithRetry(() -> chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user(buildPrompt(question, docs))
                 .stream()
-                .content()
-                .onErrorResume(e -> Flux.just("\n\n⚠️ AI 服务出错：" + e.getMessage()));
+                .content());
     }
 
     /** 一次性回答（评测用） */

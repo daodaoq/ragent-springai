@@ -39,14 +39,13 @@ public class ChatService {
                 .map(cm -> cm.role().equals("user") ? (Message) new UserMessage(cm.content()) : (Message) new AssistantMessage(cm.content()))
                 .toList();
         StringBuilder answer = new StringBuilder();
-        return chatClient.prompt()
+        return AiRetry.streamWithRetry(() -> chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .messages(history)
                 .user(message)
                 .stream()
                 .content()
                 .doOnNext(answer::append)
-                .doOnComplete(() -> chatMemoryService.append(conversationId, message, answer.toString()))
-                .onErrorResume(e -> Flux.just("\n\n⚠️ 抱歉，AI 服务出错：" + e.getMessage()));
+                .doOnComplete(() -> chatMemoryService.append(conversationId, message, answer.toString())));
     }
 }
