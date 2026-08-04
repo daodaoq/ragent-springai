@@ -14,6 +14,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * RAG 检索增强问答服务实现（P3；P4 接入混合检索 + 重排）。
@@ -100,15 +101,27 @@ public class RagServiceImpl implements RagService {
             List<SourceItem> sources = new ArrayList<>();
             int i = 1;
             for (Document d : docs) {
-                String filename = String.valueOf(d.getMetadata().getOrDefault("filename", ""));
+                Map<String, Object> meta = d.getMetadata();
+                String filename = String.valueOf(meta.getOrDefault("filename", ""));
                 String text = d.getText();
                 String excerpt = text.length() > 150 ? text.substring(0, 150) + "…" : text;
-                sources.add(new SourceItem(i++, filename, excerpt, d.getScore()));
+                sources.add(new SourceItem(i++, filename, excerpt, d.getScore(),
+                        asStr(meta.get("headingPath")),
+                        asInt(meta.get("lineStart")), asInt(meta.get("lineEnd")),
+                        asInt(meta.get("page"))));
             }
             return objectMapper.writeValueAsString(sources);
         } catch (Exception e) {
             return "[]";
         }
+    }
+
+    private static String asStr(Object o) {
+        return o == null ? null : String.valueOf(o);
+    }
+
+    private static Integer asInt(Object o) {
+        return o instanceof Number n ? n.intValue() : null;
     }
 
     private static ServerSentEvent<String> sse(String event, String data) {

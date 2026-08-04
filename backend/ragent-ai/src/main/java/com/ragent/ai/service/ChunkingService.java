@@ -7,15 +7,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 结构感知中文分片器（替代 TokenTextSplitter）：
  * <ol>
- *   <li>按 Markdown 标题（# / ## / ...）切成小节，每个切片内容自带标题上下文</li>
+ *   <li>按 Markdown 标题（# / ## / ...）切成小节，维护标题栈生成完整路径（headingPath），
+ *       每个切片内容自带标题上下文</li>
  *   <li>小节内按空行分段落，把相邻段落组合到目标块大小</li>
  *   <li>超长段落按中文句号（。！？；）切分，避免从句子中间硬切</li>
  *   <li>块间重叠（overlap）保住边界上下文</li>
  * </ol>
+ * 每个切片同时带出在原始文档中的位置：行号范围（startLine/endLine，0 基）与字符偏移
+ * （startChar/endChar，0 基、半开区间，指向正文不含标题前缀），供引用溯源/原文跳转使用。
  * 配置见 {@link ChunkingProperties}（ragent.chunking.max-chunk-chars / overlap-chars）。
  */
 @Component
@@ -32,136 +36,206 @@ public class ChunkingService {
         this.overlapChars = properties.getOverlapChars();
     }
 
-    /** 分片结果：content 含标题前缀，title 为小节标题 */
-    public record Chunk(String content, String title) {
+    /** 分片结果：content 含标题前缀；headingPath 为完整标题路径；start/end 行与字符指向原始文档正文 */
+    public record Chunk(String content, String title, String headingPath,
+                        int startLine, int endLine, int startChar, int endChar) {
+    }
+
+    /** 段落/句片：text 为片段文本，start/end 行与字符指向原始文档正文（0 基，字符半开区间） */
+    private record Para(String text, int startLine, int endLine, int startChar, int endChar) {
+    }
+
+    /** 小节：标题 + 完整标题路径 + 正文行号集合（0 基） */
+    private record Section(String title, String headingPath, List<Integer> bodyLines) {
     }
 
     public List<Chunk> chunk(String text) {
         if (text == null || text.isBlank()) {
             return List.of();
         }
-        List<Section> sections = parseSections(text);
+        String[] lines = text.split("\n", -1);
+        // 每行在原文中的起始字符偏移，用于把切片的字符范围换算成行号
+        int[] lineStart = new int[lines.length];
+        int off = 0;
+        for (int i = 0; i < lines.length; i++) {
+            lineStart[i] = off;
+            off += lines[i].length() + 1;
+        }
+        List<Section> sections = parseSections(lines);
         List<Chunk> result = new ArrayList<>();
         for (Section section : sections) {
-            splitSection(section, result);
+            splitSection(section, lineStart, lines, result);
         }
         return result;
     }
 
     // ==================== 结构解析 ====================
 
-    private record Section(String title, String body) {
-    }
-
-    private List<Section> parseSections(String text) {
+    private List<Section> parseSections(String[] lines) {
         List<Section> sections = new ArrayList<>();
-        StringBuilder body = new StringBuilder();
+        List<String> stack = new ArrayList<>();
         String currentTitle = null;
-        for (String line : text.split("\n", -1)) {
-            Matcher m = HEADING.matcher(line);
+        String currentPath = null;
+        List<Integer> body = new ArrayList<>();
+        for (int i = 0; i < lines.length; i++) {
+            Matcher m = HEADING.matcher(lines[i]);
             if (m.matches()) {
                 if (currentTitle != null) {
-                    sections.add(new Section(currentTitle, body.toString()));
+                    sections.add(new Section(currentTitle, currentPath, body));
                 }
-                // 保留 "# 标题" 原文作为上下文前缀
-                currentTitle = line.trim();
-                body = new StringBuilder();
+                // 维护标题栈：级别 >= 当前标题的旧标题出栈，当前标题入栈，形成嵌套路径
+                int level = m.group(1).length();
+                while (!stack.isEmpty() && headingLevel(stack.get(stack.size() - 1)) >= level) {
+                    stack.remove(stack.size() - 1);
+                }
+                String headingLine = lines[i].trim(); // 保留 "# 标题" 原文作为上下文前缀
+                stack.add(headingLine);
+                currentTitle = headingLine;
+                currentPath = String.join(" > ", stack);
+                body = new ArrayList<>();
             } else {
-                body.append(line).append('\n');
+                body.add(i);
             }
         }
         if (currentTitle != null) {
-            sections.add(new Section(currentTitle, body.toString()));
+            sections.add(new Section(currentTitle, currentPath, body));
         }
         return sections;
     }
 
+    /** 标题行前缀 # 的个数 = 标题级别 */
+    private static int headingLevel(String headingLine) {
+        int n = 0;
+        while (n < headingLine.length() && headingLine.charAt(n) == '#') {
+            n++;
+        }
+        return n;
+    }
+
     // ==================== 小节切分 ====================
 
-    private void splitSection(Section section, List<Chunk> out) {
-        String body = section.body().trim();
-        if (body.isEmpty()) {
+    private void splitSection(Section section, int[] lineStart, String[] lines, List<Chunk> out) {
+        List<Para> paras = splitParagraphs(section.bodyLines(), lineStart, lines);
+        if (paras.isEmpty()) {
             return;
         }
-        // 小节不超长：整体一块
-        if (body.length() <= maxChunkChars) {
-            out.add(new Chunk(section.title() + "\n" + body, section.title()));
-            return;
-        }
-        // 段落组块
-        List<String> paragraphs = splitParagraphs(body);
-        List<String> current = new ArrayList<>();
+        // 段落组块：累计到目标块大小落一块；重叠保留上一块最后一段
+        List<Para> current = new ArrayList<>();
         int len = 0;
-        for (String p : paragraphs) {
-            if (len + p.length() > maxChunkChars && !current.isEmpty()) {
-                out.add(new Chunk(section.title() + "\n" + String.join("\n", current), section.title()));
-                // 重叠：保留上一块最后一段
-                current = new ArrayList<>(current.subList(Math.max(0, current.size() - 1), current.size()));
-                len = current.stream().mapToInt(String::length).sum();
+        for (Para p : paras) {
+            if (len + p.text().length() > maxChunkChars && !current.isEmpty()) {
+                out.add(makeChunk(section, current));
+                current = new ArrayList<>(current.subList(current.size() - 1, current.size()));
+                len = current.get(0).text().length();
             }
             current.add(p);
-            len += p.length();
+            len += p.text().length();
         }
         if (!current.isEmpty()) {
-            out.add(new Chunk(section.title() + "\n" + String.join("\n", current), section.title()));
+            out.add(makeChunk(section, current));
         }
     }
 
-    /** 按空行分段落；超长段落先按句子切 */
-    private List<String> splitParagraphs(String body) {
-        List<String> result = new ArrayList<>();
-        for (String raw : body.split("\n\\s*\n")) {
-            String p = raw.trim();
-            if (p.isEmpty()) {
-                continue;
-            }
-            if (p.length() > maxChunkChars) {
-                result.addAll(splitSentences(p));
+    /** 把一组相邻片段合成切片：内容 = 标题 + 正文；位置范围取首片段起点到末片段终点 */
+    private Chunk makeChunk(Section section, List<Para> paras) {
+        String body = paras.stream().map(Para::text).collect(Collectors.joining("\n"));
+        Para first = paras.get(0);
+        Para last = paras.get(paras.size() - 1);
+        return new Chunk(section.title() + "\n" + body, section.title(), section.headingPath(),
+                first.startLine(), last.endLine(), first.startChar(), last.endChar());
+    }
+
+    /** 按空行（含仅空白行）把节正文切成段落；超长段落先按句子切（见 addBlockPieces） */
+    private List<Para> splitParagraphs(List<Integer> bodyLines, int[] lineStart, String[] lines) {
+        List<Para> result = new ArrayList<>();
+        List<Integer> block = new ArrayList<>();
+        for (int li : bodyLines) {
+            if (lines[li].isBlank()) {
+                if (!block.isEmpty()) {
+                    addBlockPieces(result, block, lineStart, lines);
+                    block = new ArrayList<>();
+                }
             } else {
-                result.add(p);
+                block.add(li);
             }
+        }
+        if (!block.isEmpty()) {
+            addBlockPieces(result, block, lineStart, lines);
         }
         return result;
     }
 
-    /** 按中文句号/叹号/问号/分号切分句子；超长句子再按窗口切 */
-    private List<String> splitSentences(String paragraph) {
-        List<String> sentences = new ArrayList<>();
-        StringBuilder cur = new StringBuilder();
-        for (int i = 0; i < paragraph.length(); i++) {
-            char c = paragraph.charAt(i);
-            cur.append(c);
+    /** 连续非空行块 → 1 个段落（位置=块的行/字符范围）；块超长则按句子/窗口切成多片 */
+    private void addBlockPieces(List<Para> out, List<Integer> block, int[] lineStart, String[] lines) {
+        int startLine = block.get(0);
+        int endLine = block.get(block.size() - 1);
+        String text = block.stream().map(i -> lines[i]).collect(Collectors.joining("\n"));
+        int baseChar = lineStart[startLine]; // 段落首字符在原文中的偏移
+        if (text.length() <= maxChunkChars) {
+            out.add(new Para(text, startLine, endLine, baseChar, baseChar + text.length()));
+            return;
+        }
+        out.addAll(splitParagraph(text, baseChar, lineStart, lines));
+    }
+
+    /** 超长段落按中文句号/叹号/问号/分号切句子；单句仍超长再按窗口切。每片给出原文行/字符范围 */
+    private List<Para> splitParagraph(String text, int baseChar, int[] lineStart, String[] lines) {
+        List<int[]> ranges = new ArrayList<>(); // {start, end} 相对段落文本的字符区间
+        int curStart = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
             if (SENTENCE_BOUNDARY.matcher(String.valueOf(c)).matches()) {
-                sentences.add(cur.toString());
-                cur.setLength(0);
+                ranges.add(new int[]{curStart, i + 1});
+                curStart = i + 1;
             }
         }
-        if (cur.length() > 0) {
-            sentences.add(cur.toString());
+        if (curStart < text.length()) {
+            ranges.add(new int[]{curStart, text.length()});
         }
-        List<String> result = new ArrayList<>();
-        for (String s : sentences) {
-            if (s.length() > maxChunkChars) {
-                result.addAll(splitByWindow(s));
+        List<Para> out = new ArrayList<>();
+        for (int[] r : ranges) {
+            int s = r[0];
+            int e = r[1];
+            if (e - s > maxChunkChars) {
+                int start = s;
+                while (start < e) {
+                    int end = Math.min(start + maxChunkChars, e);
+                    out.add(toPara(text, start, end, baseChar, lineStart));
+                    if (end >= e) {
+                        break;
+                    }
+                    start = end - overlapChars;
+                }
             } else {
-                result.add(s);
+                out.add(toPara(text, s, e, baseChar, lineStart));
             }
         }
-        return result;
+        return out;
     }
 
-    /** 滑动窗口切分 + 重叠 */
-    private List<String> splitByWindow(String text) {
-        List<String> result = new ArrayList<>();
-        int start = 0;
-        while (start < text.length()) {
-            int end = Math.min(start + maxChunkChars, text.length());
-            result.add(text.substring(start, end));
-            if (end >= text.length()) {
-                break;
+    /** 把段落内 [s,e) 相对偏移换算成原文全局字符偏移与行号 */
+    private Para toPara(String text, int s, int e, int baseChar, int[] lineStart) {
+        int startChar = baseChar + s;
+        int endChar = baseChar + e;
+        int startLine = lineAt(startChar, lineStart);
+        int endLine = lineAt(Math.max(startChar, endChar - 1), lineStart);
+        return new Para(text.substring(s, e), startLine, endLine, startChar, endChar);
+    }
+
+    /** 字符偏移 → 行号（0 基）：最后一个起始偏移 <= offset 的行 */
+    private static int lineAt(int offset, int[] lineStart) {
+        int lo = 0;
+        int hi = lineStart.length - 1;
+        int ans = 0;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            if (lineStart[mid] <= offset) {
+                ans = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
             }
-            start = end - overlapChars;
         }
-        return result;
+        return ans;
     }
 }

@@ -22,6 +22,12 @@ export default function KnowledgeBasePage() {
   // 上传失败详情（可展开查看全部失败原因）
   const [uploadErrors, setUploadErrors] = useState<{ filename: string; message: string }[]>([])
   const [showUploadErrors, setShowUploadErrors] = useState(false)
+  // 同名覆盖确认（Windows 复制冲突风格：把决定权交给用户）
+  const [dupeDialog, setDupeDialog] = useState<string[] | null>(null)
+  const [dupeChecked, setDupeChecked] = useState<Record<string, boolean>>({})
+  // 上传完成后的提示（如「N 个覆盖了旧版本」）
+  const [notice, setNotice] = useState('')
+  const pendingFilesRef = useRef<File[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
   // 切片查看模态框
   const [chunkDoc, setChunkDoc] = useState<KbDocument | null>(null)
@@ -49,10 +55,32 @@ export default function KnowledgeBasePage() {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
-    const list = Array.from(files)
+    // 批内同名去重（后选者覆盖先选者），避免同批两个同名文件被后端并发线程互相覆盖
+    const byName = new Map<string, File>()
+    for (const f of Array.from(files)) byName.set(f.name, f)
+    const list = Array.from(byName.values())
+    e.target.value = '' // 立即清空，保证下次重选同一批文件也能触发 change
+
+    // 与已入库文档比对：存在同名先问用户是否覆盖，不直接覆盖（把决定权交给用户）
+    const existingNames = new Set(docs.map((d) => d.filename))
+    const dupes = list.filter((f) => existingNames.has(f.name))
+    if (dupes.length > 0) {
+      const checked: Record<string, boolean> = {}
+      dupes.forEach((f) => (checked[f.name] = true)) // 默认勾选覆盖：用户主动选的文件通常就是要更新的
+      pendingFilesRef.current = list
+      setDupeChecked(checked)
+      setDupeDialog(dupes.map((f) => f.name))
+      return
+    }
+    void doUpload(list, [], 0)
+  }
+
+  /** 实际执行上传（overwriteNames=本批要覆盖的旧文档名，skippedCount=被用户跳过的重复文件数） */
+  const doUpload = async (list: File[], overwriteNames: string[], skippedCount: number) => {
     setUploading(true)
     setUploadProgress({ done: 0, total: list.length })
     setError('')
+    setNotice('')
     setUploadErrors([])
     setShowUploadErrors(false)
     try {
@@ -70,15 +98,32 @@ export default function KnowledgeBasePage() {
         // 摘要只显示成败数量，完整失败原因存起来供「查看详情」展开
         setUploadErrors(failed.map((r) => ({ filename: r.filename, message: r.message ?? '未知错误' })))
         setError(`成功 ${allResults.length - failed.length}/${allResults.length} 个，失败 ${failed.length} 个`)
+      } else {
+        const overwrote = allResults.filter((r) => r.success && overwriteNames.includes(r.filename)).length
+        const tips: string[] = []
+        if (overwrote > 0) tips.push(`${overwrote} 个覆盖了旧版本`)
+        if (skippedCount > 0) tips.push(`跳过 ${skippedCount} 个已存在文件`)
+        if (tips.length > 0) setNotice(`上传完成：${tips.join('，')}`)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '上传失败')
     } finally {
-      e.target.value = ''
       await load()
       setUploading(false)
       setUploadProgress(null)
     }
+  }
+
+  /** 覆盖确认弹窗里点击「上传选中」：只上传非重复文件 + 用户勾选要覆盖的重复文件 */
+  const confirmDupeUpload = () => {
+    const dupes = dupeDialog ?? []
+    const overwriteSet = new Set(dupes.filter((n) => dupeChecked[n]))
+    const skipped = dupes.filter((n) => !dupeChecked[n])
+    const overwriteNames = dupes.filter((n) => dupeChecked[n])
+    const list = pendingFilesRef.current.filter((f) => !dupes.includes(f.name) || overwriteSet.has(f.name))
+    setDupeDialog(null)
+    pendingFilesRef.current = []
+    void doUpload(list, overwriteNames, skipped.length)
   }
 
   const handleDelete = async (id: string) => {
@@ -179,6 +224,8 @@ export default function KnowledgeBasePage() {
         </div>
       )}
 
+      {notice && <div className="text-amber-600 text-sm">ℹ️ {notice}</div>}
+
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {docs.length === 0 ? (
           <div className="text-slate-400 text-sm py-12 text-center">知识库为空，上传第一份文档开始构建</div>
@@ -230,6 +277,69 @@ export default function KnowledgeBasePage() {
         )}
       </div>
 
+      {dupeDialog && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          onClick={() => {
+            setDupeDialog(null)
+            pendingFilesRef.current = []
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-slate-200">
+              <h2 className="font-bold text-slate-800">⚠️ 检测到 {dupeDialog.length} 个同名文档</h2>
+              <p className="text-xs text-slate-400 mt-0.5">勾选 = 覆盖旧版本；取消勾选 = 跳过该文件，保留旧版本</p>
+            </div>
+            <div className="max-h-64 overflow-y-auto px-5 py-3 space-y-2">
+              {dupeDialog.map((name) => (
+                <label key={name} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!dupeChecked[name]}
+                    onChange={() => setDupeChecked((s) => ({ ...s, [name]: !s[name] }))}
+                    className="accent-blue-600 shrink-0"
+                  />
+                  <span className="break-all">{name}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center justify-between px-5 py-4 border-t border-slate-200">
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setDupeChecked(Object.fromEntries(dupeDialog.map((n) => [n, true])))}
+                  className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm hover:bg-slate-50"
+                >
+                  全部覆盖
+                </button>
+                <button
+                  onClick={() => setDupeChecked(Object.fromEntries(dupeDialog.map((n) => [n, false])))}
+                  className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm hover:bg-slate-50"
+                >
+                  全部跳过
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setDupeDialog(null)
+                    pendingFilesRef.current = []
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-slate-500 text-sm hover:bg-slate-50"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmDupeUpload}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
+                >
+                  上传选中（{pendingFilesRef.current.length - dupeDialog.length + dupeDialog.filter((n) => dupeChecked[n]).length}）
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {chunkDoc && (
         <div
           className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
@@ -265,8 +375,23 @@ export default function KnowledgeBasePage() {
                       <span className="px-1.5 py-0.5 rounded bg-blue-600 text-white text-xs font-medium">
                         切片 {c.chunkIndex + 1}
                       </span>
-                      <span className="text-xs text-slate-400">共 {c.content.length} 字符</span>
+                      <span className="text-xs text-slate-400">
+                        共 {c.content.length} 字符
+                        {c.charStart != null && c.charEnd != null && (
+                          <> · 字符 {c.charStart}-{c.charEnd}</>
+                        )}
+                        {c.lineStart != null && (
+                          <>
+                            {' · '}
+                            {c.lineEnd != null ? `第 ${c.lineStart + 1}-${c.lineEnd + 1} 行` : `第 ${c.lineStart + 1} 行`}
+                            {c.page != null ? ` · 第 ${c.page} 页` : ''}
+                          </>
+                        )}
+                      </span>
                     </div>
+                    {c.headingPath && (
+                      <div className="px-3 py-1 bg-amber-50/60 text-xs text-slate-500 border-b border-slate-100">📑 {c.headingPath}</div>
+                    )}
                     <div className="px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap">{c.content}</div>
                   </div>
                 ))

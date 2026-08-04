@@ -27,6 +27,7 @@ public interface RagService {
     /** RAG 流式接口：先发 sources 事件，再发 content 事件 */
     Flux<ServerSentEvent<String>> ragStream(String question);
 
-    record SourceItem(int idx, String filename, String excerpt, Double score) {
+    record SourceItem(int idx, String filename, String excerpt, Double score,
+                      String headingPath, Integer lineStart, Integer lineEnd, Integer page) {
     }
 }

@@ -7,6 +7,13 @@ export interface RagSource {
   excerpt: string
   /** 检索相关度分数（P4 混合检索 + 重排后给出；纯向量降级时可能为空） */
   score?: number
+  /** 切片章节路径（如 "# 第一章 > ## 1.1"） */
+  headingPath?: string
+  /** 切片在原始文档中的行号范围（0 基；旧数据/纯向量降级时可能缺失） */
+  lineStart?: number
+  lineEnd?: number
+  /** PDF 页码（1 基；非 PDF 缺失） */
+  page?: number
 }
 
 interface StreamHandlers {

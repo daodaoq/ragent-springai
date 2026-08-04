@@ -29,6 +29,9 @@ public class KbDocument {
     /** MinIO 原始文件 object key（上传时先落 MinIO，失败可据此重试，无需重新上传） */
     private String objectKey;
 
+    /** 原文件内容 SHA-256（十六进制），用于判断同名文件是否真的变化 */
+    private String fileHash;
+
     private Integer chunkCount;
 
     /** PENDING / READY / FAILED */

@@ -94,6 +94,13 @@ public class RetrievalServiceImpl implements RetrievalService {
         meta.put("documentId", String.valueOf(r.documentId()));
         meta.put("filename", r.filename());
         meta.put("chunkIndex", r.chunkIndex());
+        // 引用溯源元数据（与向量路径 payload 保持一致，旧数据可能为 null）
+        if (r.headingPath() != null) meta.put("headingPath", r.headingPath());
+        if (r.lineStart() != null) meta.put("lineStart", r.lineStart());
+        if (r.lineEnd() != null) meta.put("lineEnd", r.lineEnd());
+        if (r.charStart() != null) meta.put("charStart", r.charStart());
+        if (r.charEnd() != null) meta.put("charEnd", r.charEnd());
+        if (r.page() != null) meta.put("page", r.page());
         // 防御：vector_id 缺失时用 documentId:chunkIndex 生成稳定 id，避免 RRF 去重键撞 null
         String id = (r.vectorId() == null || r.vectorId().isBlank())
                 ? r.documentId() + ":" + r.chunkIndex()

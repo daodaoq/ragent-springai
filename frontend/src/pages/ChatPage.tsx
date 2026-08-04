@@ -211,12 +211,21 @@ export default function ChatPage() {
                     <div key={s.idx} className="max-w-[85%] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
                       <div className="text-xs font-medium text-blue-600">
                         [{s.idx}] {s.filename}
+                        {s.lineStart != null && (
+                          <span className="text-xs text-slate-400 ml-2 font-normal">
+                            {s.lineEnd != null ? `第 ${s.lineStart + 1}-${s.lineEnd + 1} 行` : `第 ${s.lineStart + 1} 行`}
+                            {s.page != null ? ` · 第 ${s.page} 页` : ''}
+                          </span>
+                        )}
                         {s.score != null && (
                           <span className="text-xs text-slate-400 ml-2 font-normal">
                             相关度 {s.score.toFixed(2)}
                           </span>
                         )}
                       </div>
+                      {s.headingPath && (
+                        <div className="text-[11px] text-slate-400 mt-0.5 truncate">📑 {s.headingPath}</div>
+                      )}
                       <div className="text-xs text-slate-500 mt-0.5 line-clamp-2">{s.excerpt}</div>
                     </div>
                   ))}

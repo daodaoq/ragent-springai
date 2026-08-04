@@ -23,6 +23,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -66,6 +68,10 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     private final ChunkingService chunkingService;
     private final MinioStorageService minioStorage;
 
+    /** 提取结果：text 为拼接文本；linePages 为 PDF 时每行→页码（1 基，行索引 0 基），非 PDF 为 null */
+    private record ExtractedText(String text, int[] linePages) {
+    }
+
     @Override
     public KbDocument upload(MultipartFile file) {
         if (file == null || file.isEmpty()) {
@@ -98,6 +104,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         doc.setContentType(file.getContentType());
         doc.setSize(bytes.length);
         doc.setStatus("PENDING");
+        doc.setFileHash(sha256Hex(bytes)); // 内容哈希，供以后同名文件是否真改了内容的判断
         kbDocumentMapper.insert(doc);
 
         // 先落 MinIO 再处理：即使后续向量化失败，原始文件也已保存，可直接重试而无需重新上传
@@ -224,6 +231,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         doc.setContentType("text/markdown");
         doc.setSize(bytes.length);
         doc.setStatus("PENDING");
+        doc.setFileHash(sha256Hex(bytes));
         kbDocumentMapper.insert(doc);
         return process(doc, bytes);
     }
@@ -275,22 +283,35 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     private KbDocument process(KbDocument doc, byte[] bytes) {
         String filename = doc.getFilename();
         try {
-            String text = extractText(filename, bytes);
-            if (text.isBlank()) {
+            ExtractedText extracted = extract(filename, bytes);
+            if (extracted.text().isBlank()) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "未提取到文本内容");
             }
-            // 结构感知分片：按标题分节 + 段落组块 + 句子边界 + 重叠
-            List<ChunkingService.Chunk> chunks = chunkingService.chunk(text);
+            // 结构感知分片：按标题分节 + 段落组块 + 句子边界 + 重叠，并带出原文行号/字符范围
+            List<ChunkingService.Chunk> chunks = chunkingService.chunk(extracted.text());
 
             List<Document> toStore = new ArrayList<>();
             int idx = 0;
             for (ChunkingService.Chunk chunk : chunks) {
+                Integer page = extracted.linePages() != null && chunk.startLine() < extracted.linePages().length
+                        ? extracted.linePages()[chunk.startLine()]
+                        : null;
+
                 Map<String, Object> meta = new HashMap<>();
                 // Qdrant payload 不支持 Long，雪花 ID 转 String 存储
                 meta.put("documentId", String.valueOf(doc.getId()));
                 meta.put("filename", filename);
                 meta.put("chunkIndex", idx);
                 meta.put("title", chunk.title());
+                // 引用溯源元数据：行号/字符偏移（0 基，半开区间）+ 章节路径 + PDF 页码
+                meta.put("headingPath", chunk.headingPath());
+                meta.put("lineStart", chunk.startLine());
+                meta.put("lineEnd", chunk.endLine());
+                meta.put("charStart", chunk.startChar());
+                meta.put("charEnd", chunk.endChar());
+                if (page != null) {
+                    meta.put("page", page);
+                }
 
                 Document entry = new Document(chunk.content(), meta);
                 DocumentChunk dc = new DocumentChunk();
@@ -298,6 +319,12 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 dc.setContent(chunk.content());
                 dc.setChunkIndex(idx);
                 dc.setVectorId(entry.getId());
+                dc.setHeadingPath(chunk.headingPath());
+                dc.setLineStart(chunk.startLine());
+                dc.setLineEnd(chunk.endLine());
+                dc.setCharStart(chunk.startChar());
+                dc.setCharEnd(chunk.endChar());
+                dc.setPage(page);
                 documentChunkMapper.insert(dc);
 
                 toStore.add(entry);
@@ -322,18 +349,58 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
     }
 
-    private String extractText(String filename, byte[] bytes) throws IOException {
+    /**
+     * 提取文本。PDF 按页拼成一个整体文本，同时记录「每行属于第几页」（1 基）：
+     * 行索引 0 基、与 chunk 的 lineStart/lineEnd 对齐，方便把切片范围换算成页码。
+     */
+    private ExtractedText extract(String filename, byte[] bytes) throws IOException {
         String lower = filename.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".pdf")) {
             PagePdfDocumentReader reader = new PagePdfDocumentReader(
                     new ByteArrayResource(bytes, filename));
-            List<Document> docs = reader.get();
+            List<Document> pages = reader.get();
             StringBuilder sb = new StringBuilder();
-            for (Document d : docs) {
-                sb.append(d.getText()).append('\n');
+            // linePages[i] = 第 i 行（i>=1）的页码；第 0 行恒为第 1 页
+            List<Integer> linePage = new ArrayList<>();
+            for (int p = 0; p < pages.size(); p++) {
+                String pageText = pages.get(p).getText();
+                if (p > 0) {
+                    sb.append('\n'); // 页间分隔换行，属于本页起始行
+                    linePage.add(p + 1);
+                }
+                sb.append(pageText);
+                int newlines = 0;
+                for (int i = 0; i < pageText.length(); i++) {
+                    if (pageText.charAt(i) == '\n') {
+                        newlines++;
+                    }
+                }
+                for (int i = 0; i < newlines; i++) {
+                    linePage.add(p + 1);
+                }
+            }
+            int[] linePages = new int[1 + linePage.size()];
+            linePages[0] = 1;
+            for (int i = 0; i < linePage.size(); i++) {
+                linePages[i + 1] = linePage.get(i);
+            }
+            return new ExtractedText(sb.toString(), linePages);
+        }
+        return new ExtractedText(new String(bytes, StandardCharsets.UTF_8), null);
+    }
+
+    /** SHA-256 十六进制摘要（内容哈希，用于判断同名文件是否真的变化） */
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(bytes);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
             }
             return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 不可用", e);
         }
-        return new String(bytes, StandardCharsets.UTF_8);
     }
 }

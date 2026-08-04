@@ -17,6 +17,7 @@ public interface DocumentChunkMapper extends BaseMapper<DocumentChunk> {
      */
     @Select("""
             SELECT dc.vector_id, dc.content, dc.document_id, dc.chunk_index, d.filename,
+                   dc.heading_path, dc.line_start, dc.line_end, dc.char_start, dc.char_end, dc.page,
                    MATCH(dc.content) AGAINST(#{keyword} IN BOOLEAN MODE) AS relevance
             FROM document_chunk dc
             JOIN kb_document d ON d.id = dc.document_id AND d.deleted = 0
@@ -31,6 +32,8 @@ public interface DocumentChunkMapper extends BaseMapper<DocumentChunk> {
      * （依赖父 POM 开启的 -parameters 编译器参数）。
      */
     record KeywordRow(String vectorId, String content, Long documentId,
-                      Integer chunkIndex, String filename, Double relevance) {
+                      Integer chunkIndex, String filename, String headingPath,
+                      Integer lineStart, Integer lineEnd, Integer charStart, Integer charEnd,
+                      Integer page, Double relevance) {
     }
 }

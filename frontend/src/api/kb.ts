@@ -8,6 +8,8 @@ export interface KbDocument {
   size: number
   chunkCount: number
   status: string
+  /** 原文件内容 SHA-256 */
+  fileHash?: string | null
   createdAt: string
 }
 
@@ -18,6 +20,16 @@ export interface DocumentChunk {
   content: string
   chunkIndex: number
   vectorId: string
+  /** 章节路径（如 "# 第一章 > ## 1.1"） */
+  headingPath?: string | null
+  /** 切片在原始文档中的行号范围（0 基） */
+  lineStart?: number | null
+  lineEnd?: number | null
+  /** 切片在原始文档中的字符偏移（0 基，开区间） */
+  charStart?: number | null
+  charEnd?: number | null
+  /** PDF 页码（1 基） */
+  page?: number | null
   createdAt: string
 }
 
