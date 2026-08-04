@@ -1,7 +1,7 @@
 package com.ragent.web.controller;
 
 import com.ragent.ai.service.ChatService;
-import com.ragent.ai.service.RagService;
+import com.ragent.web.service.RagService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;

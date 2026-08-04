@@ -3,7 +3,7 @@ package com.ragent.web.eval;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ragent.ai.service.RagService;
+import com.ragent.web.service.RagService;
 import com.ragent.common.exception.BusinessException;
 import com.ragent.common.exception.ErrorCode;
 import com.ragent.web.entity.KbDocument;

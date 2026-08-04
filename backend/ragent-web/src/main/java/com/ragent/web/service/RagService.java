@@ -1,10 +1,9 @@
-package com.ragent.ai.service;
+package com.ragent.web.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ragent.web.config.RetrievalProperties;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
@@ -14,7 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * RAG 检索增强问答服务（P3）
+ * RAG 检索增强问答服务（P3；P4 接入混合检索 + 重排）。
  * 检索方法同时服务于流式接口与评测程序，避免逻辑重复。
  */
 @Service
@@ -27,20 +26,22 @@ public class RagService {
             如果知识库内容不足以回答，就如实说明不知道，不要编造。
             """;
 
-    private final VectorStore vectorStore;
+    private final RetrievalService retrievalService;
     private final ObjectProvider<ChatClient> chatClientProvider;
     private final ObjectMapper objectMapper;
+    private final RetrievalProperties props;
 
-    public RagService(VectorStore vectorStore, ObjectProvider<ChatClient> chatClientProvider, ObjectMapper objectMapper) {
-        this.vectorStore = vectorStore;
+    public RagService(RetrievalService retrievalService, ObjectProvider<ChatClient> chatClientProvider,
+                      ObjectMapper objectMapper, RetrievalProperties props) {
+        this.retrievalService = retrievalService;
         this.chatClientProvider = chatClientProvider;
         this.objectMapper = objectMapper;
+        this.props = props;
     }
 
-    /** 向量检索 */
+    /** 检索（P4：混合检索 + 重排，返回带 score 的 Document） */
     public List<Document> retrieve(String question, int topK) {
-        return vectorStore.similaritySearch(
-                SearchRequest.builder().query(question).topK(topK).build());
+        return retrievalService.retrieve(question, topK);
     }
 
     /** 拼装带引用上下文的 Prompt */
@@ -85,7 +86,7 @@ public class RagService {
 
     /** RAG 流式接口：先发 sources 事件，再发 content 事件 */
     public Flux<ServerSentEvent<String>> ragStream(String question) {
-        List<Document> docs = retrieve(question, 4);
+        List<Document> docs = retrieve(question, props.getTopK());
         return Flux.concat(
                 Flux.just(sse("sources", sourcesJson(docs))),
                 streamAnswer(question, docs).map(c -> sse("content", c))
@@ -100,7 +101,7 @@ public class RagService {
                 String filename = String.valueOf(d.getMetadata().getOrDefault("filename", ""));
                 String text = d.getText();
                 String excerpt = text.length() > 150 ? text.substring(0, 150) + "…" : text;
-                sources.add(new SourceItem(i++, filename, excerpt));
+                sources.add(new SourceItem(i++, filename, excerpt, d.getScore()));
             }
             return objectMapper.writeValueAsString(sources);
         } catch (Exception e) {
@@ -108,7 +109,7 @@ public class RagService {
         }
     }
 
-    public record SourceItem(int idx, String filename, String excerpt) {
+    public record SourceItem(int idx, String filename, String excerpt, Double score) {
     }
 
     private static ServerSentEvent<String> sse(String event, String data) {

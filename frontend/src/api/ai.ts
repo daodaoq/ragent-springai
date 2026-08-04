@@ -2,6 +2,8 @@ export interface RagSource {
   idx: number
   filename: string
   excerpt: string
+  /** 检索相关度分数（P4 混合检索 + 重排后给出；纯向量降级时可能为空） */
+  score?: number
 }
 
 interface StreamHandlers {

@@ -71,6 +71,24 @@ ragent:
   chunking:
     max-chunk-chars: 800
     overlap-chars: 100
+  # P4 检索配置（混合检索 + 重排）
+  retrieval:
+    # 向量/关键词各自召回候选数
+    dense-top-n: 20
+    keyword-top-n: 20
+    # 最终返回条数（也作为重排 top_n）
+    top-k: 5
+    # RRF 融合常数
+    rrf-k: 60
+    # 关键词通道开关（FULLTEXT 索引未建时可关）
+    keyword-enabled: true
+    # 重排开关
+    rerank-enabled: true
+    # 送入重排的候选数
+    rerank-top-n: 10
+    rerank-model: gte-rerank-v2
+    # 复用百炼向量 Key（gitignored application-local.yml 中 spring.ai.openai.embedding.api-key）
+    rerank-api-key: ${spring.ai.openai.embedding.api-key:}
 
 logging:
   level:
