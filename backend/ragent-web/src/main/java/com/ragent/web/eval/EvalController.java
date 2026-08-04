@@ -1,5 +1,6 @@
 package com.ragent.web.eval;
 
+import com.ragent.ai.eval.EvalService;
 import com.ragent.common.result.Result;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;

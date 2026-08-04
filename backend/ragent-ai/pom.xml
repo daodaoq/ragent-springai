@@ -15,6 +15,29 @@
     <description>Spring AI 集成模块（LLM / RAG / Agent）</description>
 
     <dependencies>
+        <!-- 本模块共享：统一响应 / 异常 / 分页 -->
+        <dependency>
+            <groupId>com.ragent</groupId>
+            <artifactId>ragent-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Web（MultipartFile / RestClient / ServerSentEvent） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- Redis 多轮会话记忆 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!-- 知识库实体 + Mapper -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+
         <!-- OpenAI starter 对接 DeepSeek（DeepSeek API 与 OpenAI 兼容，只需覆盖 base-url 与模型名） -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
@@ -29,6 +52,13 @@
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-pdf-document-reader</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
         </dependency>
     </dependencies>
 </project>

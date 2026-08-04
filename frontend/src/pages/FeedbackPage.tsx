@@ -126,7 +126,7 @@ export default function FeedbackPage() {
               {records.map((r) => {
                 const isDown = r.rating === -1
                 const isExpanded = expanded[r.id]
-                const needExpand = r.answer.length > 120
+                const needExpand = (r.answer ?? '').length > 120
                 return (
                   <tr
                     key={r.id}
@@ -136,14 +136,14 @@ export default function FeedbackPage() {
                       {formatTime(r.createdAt)}
                     </td>
                     <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
-                      {r.nickname || `用户 ${r.userId.slice(-6)}`}
+                      {r.nickname || (r.userId ? `用户 ${r.userId.slice(-6)}` : '匿名用户')}
                     </td>
                     <td className="px-4 py-3 text-slate-700">
                       <div className="line-clamp-3 whitespace-pre-wrap">{r.question}</div>
                     </td>
                     <td className="px-4 py-3 text-slate-600">
                       <div className={`whitespace-pre-wrap ${isExpanded ? '' : 'line-clamp-3'}`}>
-                        {r.answer}
+                        {r.answer ?? ''}
                       </div>
                       {needExpand && (
                         <button

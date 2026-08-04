@@ -49,15 +49,25 @@ export default function MainLayout() {
                   我要提问
                 </Link>
               )}
+              {user && user.role === 'ADMIN' && (
+                <Link to="/users" className="hover:text-blue-600">
+                  用户管理
+                </Link>
+              )}
+              {user && user.role === 'ADMIN' && (
+                <Link to="/logs" className="hover:text-blue-600">
+                  系统日志
+                </Link>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
             {user ? (
               <>
-                <span className="text-slate-600">
+                <Link to="/profile" className="text-slate-600 hover:text-blue-600">
                   {user.nickname}
                   <span className="ml-1 text-xs text-slate-400">({roleLabel[user.role]})</span>
-                </span>
+                </Link>
                 <button onClick={handleLogout} className="text-slate-500 hover:text-red-500">
                   退出
                 </button>

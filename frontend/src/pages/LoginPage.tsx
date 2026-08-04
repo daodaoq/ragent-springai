@@ -5,8 +5,9 @@ import { useAuthStore } from '../store/auth'
 export default function LoginPage() {
   const { login } = useAuthStore()
   const navigate = useNavigate()
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
+  // 测试账号预填（seed_admin.sql 初始管理员 admin / admin123），方便本地测试登录
+  const [username, setUsername] = useState('admin')
+  const [password, setPassword] = useState('admin123')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 

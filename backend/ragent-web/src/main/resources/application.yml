@@ -48,6 +48,10 @@ spring:
       host: localhost
       port: 6379
       timeout: 3s
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
 
 mybatis-plus:
   configuration:
@@ -93,3 +97,12 @@ ragent:
 logging:
   level:
     com.ragent: debug
+
+# MinIO 对象存储（默认凭据 minioadmin/minioadmin 仅限内网；生产请用环境变量覆盖）
+minio:
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  bucket: ${MINIO_BUCKET:ragent}
+  # 图片直链有效期（秒），默认 7 天
+  url-expiry: 604800

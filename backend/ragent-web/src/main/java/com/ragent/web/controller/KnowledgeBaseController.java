@@ -1,9 +1,11 @@
 package com.ragent.web.controller;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import com.ragent.common.result.PageResult;
 import com.ragent.common.result.Result;
-import com.ragent.web.entity.KbDocument;
-import com.ragent.web.service.KnowledgeBaseService;
+import com.ragent.ai.entity.DocumentChunk;
+import com.ragent.ai.entity.KbDocument;
+import com.ragent.ai.service.KnowledgeBaseService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -44,5 +46,14 @@ public class KnowledgeBaseController {
     public Result<Void> delete(@PathVariable Long id) {
         kbService.delete(id);
         return Result.success();
+    }
+
+    /** 文档切片分页查看（按 chunk_index 升序） */
+    @GetMapping("/documents/{id}/chunks")
+    @SaCheckLogin
+    public Result<PageResult<DocumentChunk>> chunks(@PathVariable Long id,
+                                                    @RequestParam(defaultValue = "1") int page,
+                                                    @RequestParam(defaultValue = "20") int pageSize) {
+        return Result.success(kbService.chunks(id, page, pageSize));
     }
 }

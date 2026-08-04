@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ragent 统一日志配置
+
+  双通道输出：
+    1. CONSOLE  — 本地开发，彩色输出，带 MDC（默认启用）
+    2. LOGSTASH — 结构化 JSON → Logstash:5000 → Elasticsearch → Kibana（需显式启用 elk profile）
+
+  启用 ELK：先 docker compose up -d elasticsearch logstash kibana，再以「spring.profiles.active=local,elk」启动。
+  未启用 elk profile 时不连接 Logstash，避免 ELK 未启动时每 10 秒重连失败刷屏。
+
+  如何在新代码中打日志：
+    private static final Logger log = LoggerFactory.getLogger(Xxx.class);
+    log.info("用户 {} 登录成功", username);
+    // 带业务上下文的推荐方式见 LogHelper 工具类
+-->
+<configuration>
+    <!-- ===== 基础属性 ===== -->
+    <springProperty name="APP_NAME" source="spring.application.name" defaultValue="ragent"/>
+
+    <!-- ===== 控制台（本地开发）===== -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) [%thread] %cyan(%logger{36}) - %msg %mdc%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ===== Logstash TCP（JSON → ES），仅 elk profile 生效 ===== -->
+    <springProfile name="elk">
+        <appender name="LOGSTASH" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+            <!-- Logstash 容器地址：docker compose 中服务名即 hostname -->
+            <destination>${LOGSTASH_HOST:-localhost}:5000</destination>
+
+            <!-- 连接超时 & 重连 -->
+            <connectionTimeout>5000</connectionTimeout>
+            <reconnectionDelay>10000</reconnectionDelay>
+
+            <!-- 队列缓冲：Logstash 不可用时先缓冲（最多 4096 条）；缓冲满后丢弃新日志而非阻塞业务线程 -->
+            <ringBufferSize>4096</ringBufferSize>
+
+            <!-- StructuredArguments → JSON，M markers 也写入 -->
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <!-- ISO-8601 时间戳，Logstash 用 date filter 解析为 @timestamp -->
+                    <timestamp>
+                        <fieldName>@timestamp</fieldName>
+                    </timestamp>
+                    <!-- 日志级别 -->
+                    <logLevel>
+                        <fieldName>level</fieldName>
+                    </logLevel>
+                    <!-- Logger 名 -->
+                    <loggerName>
+                        <fieldName>logger</fieldName>
+                    </loggerName>
+                    <!-- 线程 -->
+                    <threadName>
+                        <fieldName>thread</fieldName>
+                    </threadName>
+                    <!-- 消息体 -->
+                    <message/>
+                    <!-- 异常堆栈 -->
+                    <stackTrace>
+                        <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                            <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                            <maxLength>2048</maxLength>
+                            <shortenedClassNameLength>20</shortenedClassNameLength>
+                            <rootCauseFirst>true</rootCauseFirst>
+                        </throwableConverter>
+                    </stackTrace>
+                    <!-- MDC 上下文（userId / action / module / traceId 等）-->
+                    <mdc>
+                        <includeMdcKeyName>userId</includeMdcKeyName>
+                        <includeMdcKeyName>action</includeMdcKeyName>
+                        <includeMdcKeyName>module</includeMdcKeyName>
+                        <includeMdcKeyName>traceId</includeMdcKeyName>
+                        <includeMdcKeyName>ip</includeMdcKeyName>
+                    </mdc>
+                    <!-- 应用名、主机 -->
+                    <contextName>
+                        <fieldName>app</fieldName>
+                    </contextName>
+                    <hostName>
+                        <fieldName>host</fieldName>
+                    </hostName>
+                    <!-- StructuredArguments（log.info("{}", kv("key", val))）-->
+                    <arguments/>
+                </providers>
+            </encoder>
+        </appender>
+
+        <!-- ===== 异步包装（避免日志 I/O 阻塞业务线程）===== -->
+        <appender name="ASYNC_LOGSTASH" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="LOGSTASH"/>
+            <!-- discardingThreshold=0：队列将满时不再只保 ERROR、一律丢弃 INFO，避免关键日志被误删；配合 neverBlock 以丢日志换不阻塞 -->
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>true</neverBlock>
+        </appender>
+    </springProfile>
+
+    <!-- ===== 全局日志级别 ===== -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- 启用 elk profile 时：把 ELK 异步 appender 附加到 root。
+         Spring Boot 不允许 springProfile 嵌套在 root 内，这里用顶层 springProfile + <logger name="ROOT"> 实现。 -->
+    <springProfile name="elk">
+        <logger name="ROOT" level="INFO">
+            <appender-ref ref="ASYNC_LOGSTASH"/>
+        </logger>
+    </springProfile>
+
+    <!-- 业务包：DEBUG，方便开发期查看详细日志 -->
+    <logger name="com.ragent" level="DEBUG"/>
+
+    <!-- 三方库噪音抑制 -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="com.baomidou" level="WARN"/>
+    <logger name="org.mybatis" level="WARN"/>
+    <logger name="io.netty" level="WARN"/>
+    <logger name="org.apache" level="WARN"/>
+</configuration>

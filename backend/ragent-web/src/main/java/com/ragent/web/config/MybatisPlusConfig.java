@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
  * MyBatis-Plus 配置：分页插件、字段自动填充、密码编码器
  */
 @Configuration
-@MapperScan("com.ragent.web.mapper")
+@MapperScan({"com.ragent.web.mapper", "com.ragent.ai.mapper"})
 public class MybatisPlusConfig {
 
     @Bean

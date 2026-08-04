@@ -12,6 +12,8 @@ interface AuthState {
   login: (username: string, password: string) => Promise<void>
   register: (data: { username: string; password: string; nickname: string; role?: string }) => Promise<void>
   logout: () => Promise<void>
+  /** 本地更新当前用户信息（改资料后同步） */
+  updateUser: (user: UserInfo) => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -51,4 +53,6 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.removeItem(TOKEN_KEY)
     set({ token: null, user: null })
   },
+
+  updateUser: (user) => set({ user }),
 }))

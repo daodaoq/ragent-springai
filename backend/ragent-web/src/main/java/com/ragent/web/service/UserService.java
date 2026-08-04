@@ -1,69 +1,44 @@
 package com.ragent.web.service;
 
-import cn.dev33.satoken.stp.StpUtil;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.ragent.common.exception.BusinessException;
-import com.ragent.common.exception.ErrorCode;
+import com.ragent.common.result.PageResult;
+import com.ragent.web.dto.ChangePasswordDTO;
 import com.ragent.web.dto.LoginDTO;
 import com.ragent.web.dto.LoginResult;
 import com.ragent.web.dto.RegisterDTO;
+import com.ragent.web.dto.UpdateProfileDTO;
 import com.ragent.web.dto.UserVO;
 import com.ragent.web.entity.User;
-import com.ragent.web.mapper.UserMapper;
-import lombok.RequiredArgsConstructor;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.stereotype.Service;
 
 /**
- * 用户服务：注册、登录、当前用户
+ * 用户服务：注册、登录、当前用户、个人资料、密码、管理员用户管理
  */
-@Service
-@RequiredArgsConstructor
-public class UserService {
+public interface UserService {
 
-    private final UserMapper userMapper;
-    private final PasswordEncoder passwordEncoder;
+    UserVO register(RegisterDTO dto);
 
-    public UserVO register(RegisterDTO dto) {
-        Long exists = userMapper.selectCount(new LambdaQueryWrapper<User>()
-                .eq(User::getUsername, dto.username()));
-        if (exists != null && exists > 0) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "用户名已存在");
-        }
-        User user = new User();
-        user.setUsername(dto.username());
-        user.setPassword(passwordEncoder.encode(dto.password()));
-        user.setNickname(dto.nickname());
-        user.setRole(dto.role() == null || dto.role().isBlank() ? "STUDENT" : dto.role());
-        userMapper.insert(user);
-        return toVO(user);
-    }
-
-    public LoginResult login(LoginDTO dto) {
-        User user = userMapper.selectOne(new LambdaQueryWrapper<User>()
-                .eq(User::getUsername, dto.username()));
-        if (user == null || !passwordEncoder.matches(dto.password(), user.getPassword())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "用户名或密码错误");
-        }
-        StpUtil.login(user.getId());
-        return new LoginResult(StpUtil.getTokenValue(), toVO(user));
-    }
+    LoginResult login(LoginDTO dto);
 
     /** 当前登录用户（需 @SaCheckLogin） */
-    public UserVO me() {
-        return toVO(getRequired(StpUtil.getLoginIdAsLong()));
-    }
+    UserVO me();
 
-    public User getRequired(Long userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        return user;
-    }
+    User getRequired(Long userId);
 
-    public UserVO toVO(User user) {
-        return new UserVO(user.getId(), user.getUsername(), user.getNickname(), user.getRole(),
-                user.getAvatar(), user.getBio(), user.getCreatedAt());
-    }
+    UserVO toVO(User user);
+
+    /** 修改当前登录用户资料（昵称/头像/简介） */
+    UserVO updateProfile(UpdateProfileDTO dto);
+
+    /** 修改当前登录用户密码 */
+    void changePassword(ChangePasswordDTO dto);
+
+    // ===== 管理员用户管理 =====
+
+    /** 用户分页列表（管理员） */
+    PageResult<UserVO> adminPage(long pageNum, long pageSize, String keyword, String role);
+
+    /** 修改用户角色（管理员） */
+    UserVO adminUpdateRole(Long userId, String role);
+
+    /** 删除用户（逻辑删除，管理员；不可删除自己） */
+    void adminDelete(Long userId);
 }
