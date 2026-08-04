@@ -66,7 +66,12 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public UserVO me() {
-        return toVO(getRequired(StpUtil.getLoginIdAsLong()));
+        return me(StpUtil.getLoginIdAsLong());
+    }
+
+    @Override
+    public UserVO me(Long userId) {
+        return toVO(getRequired(userId));
     }
 
     @Override

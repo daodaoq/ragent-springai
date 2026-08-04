@@ -21,6 +21,9 @@ public interface UserService {
     /** 当前登录用户（需 @SaCheckLogin） */
     UserVO me();
 
+    /** 按用户 ID 取用户信息（异步线程用，避免依赖 StpUtil 线程上下文） */
+    UserVO me(Long userId);
+
     User getRequired(Long userId);
 
     UserVO toVO(User user);

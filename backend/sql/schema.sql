@@ -167,3 +167,20 @@ CREATE TABLE IF NOT EXISTS `rag_query_log` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 查询日志';
 
 -- 注意: 初始管理员账号见 sql/seed_admin.sql（一次性手动执行）
+
+-- ============================================
+-- P7: AI 会话记忆摘要（滑动窗口溢出时 LLM 压缩，MySQL 持久化）
+--      Redis TTL 7 天窗口过期后，仍可从本表恢复长对话上下文
+-- ============================================
+CREATE TABLE IF NOT EXISTS `ai_conversation_summary` (
+  `id`              BIGINT       NOT NULL COMMENT '主键(雪花ID)',
+  `conversation_id` VARCHAR(64)  NOT NULL COMMENT '会话ID(前端 convId)',
+  `summary`         MEDIUMTEXT   NOT NULL COMMENT 'LLM 压缩后的对话摘要',
+  `message_count`   INT          NOT NULL DEFAULT 0 COMMENT '已压缩的原始消息条数',
+  `last_summary_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '最近一次摘要生成时间',
+  `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_conversation` (`conversation_id`),
+  KEY `idx_updated_at` (`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 会话记忆摘要';

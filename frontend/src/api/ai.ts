@@ -34,6 +34,10 @@ interface StreamHandlers {
   onRewritten?: (info: RewrittenInfo) => void
   /** 统一对话 mode 事件：rag / chat / agent */
   onMode?: (mode: string) => void
+  /** 限流排队位次（1 基；仅排队时推送） */
+  onQueuePosition?: (position: number) => void
+  /** 限流被拒（队列满/排队超时） */
+  onRateLimited?: (info: { reason?: string }) => void
 }
 
 /**
@@ -97,6 +101,18 @@ async function streamSSE(url: string, body: unknown, handlers: StreamHandlers): 
           handlers.onMode?.(JSON.parse(payload) as string)
         } catch {
           // 忽略无法解析的引擎标记
+        }
+      } else if (event === 'queue-position') {
+        try {
+          handlers.onQueuePosition?.(JSON.parse(payload) as number)
+        } catch {
+          // 忽略无法解析的位次
+        }
+      } else if (event === 'rate-limited') {
+        try {
+          handlers.onRateLimited?.(JSON.parse(payload))
+        } catch {
+          handlers.onRateLimited?.({})
         }
       } else {
         acc += payload

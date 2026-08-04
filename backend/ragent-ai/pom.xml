@@ -53,6 +53,11 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-pdf-document-reader</artifactId>
         </dependency>
+        <!-- Reactor 自动上下文传播：把 RagentContext 跨订阅/调度线程透传 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>context-propagation</artifactId>
+        </dependency>
         <!-- 通用文档解析：Apache Tika（docx/doc/xlsx/pptx/rtf → 带标题/表格结构） -->
         <dependency>
             <groupId>org.apache.tika</groupId>

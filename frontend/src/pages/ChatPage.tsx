@@ -51,6 +51,8 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: WELCOME }])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  /** 限流排队位次（null = 未排队） */
+  const [queuePos, setQueuePos] = useState<number | null>(null)
   /** 每条助手消息的赞/踩选中态（key = 消息下标） */
   const [feedback, setFeedback] = useState<Record<number, 1 | -1>>({})
   /** 反馈提交失败时的提示（3s 自动消失） */
@@ -122,15 +124,28 @@ export default function ChatPage() {
     setStreaming(true)
     try {
       await streamUnified(text, convId, {
-        onMode: (m) => updateLast({ engine: (m as Message['engine']) ?? undefined }),
-        onSources: (sources) => updateLast({ sources }),
-        onContent: (acc) => updateLast({ content: acc }),
+        onMode: (m) => {
+          setQueuePos(null)
+          updateLast({ engine: (m as Message['engine']) ?? undefined })
+        },
+        onSources: (sources) => {
+          setQueuePos(null)
+          updateLast({ sources })
+        },
+        onContent: (acc) => {
+          setQueuePos(null)
+          updateLast({ content: acc })
+        },
         onRewritten: (info) => updateLast({ rewritten: info }),
         onToolCall: (t) => updateLast((prev) => ({ tools: [...(prev.tools ?? []), t] })),
+        onQueuePosition: (p) => setQueuePos(p),
+        onRateLimited: () => setQueuePos(null),
       })
     } catch (e) {
+      setQueuePos(null)
       updateLast({ content: '⚠️ ' + (e instanceof Error ? e.message : '连接失败') })
     } finally {
+      setQueuePos(null)
       setStreaming(false)
     }
   }
@@ -286,6 +301,11 @@ export default function ChatPage() {
       </div>
 
       {feedbackError && <div className="text-xs text-red-500 mb-1">{feedbackError}</div>}
+      {queuePos != null && (
+        <div className="text-xs text-amber-600 mb-1 flex items-center gap-1">
+          <span className="animate-pulse">⏳</span> 请求高峰排队中，当前第 {queuePos} 位，请稍候…
+        </div>
+      )}
       <div className="border-t border-slate-200 pt-3 flex gap-2">
         <textarea
           className="flex-1 border border-slate-300 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"

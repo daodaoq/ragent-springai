@@ -107,6 +107,28 @@ ragent:
     multi-query-count: 3            # D 多查询变体数量
     context-turn-count: 3           # F 喂给改写的最近用户轮数
     query-log-enabled: true         # 查询日志采集（每次 RAG 请求后台异步落库 rag_query_log）
+  # 模型调用分布式队列限流（Redis ZSET 公平排队 + Lua 原子 + Pub/Sub 通知 + SSE 位次反馈）
+  ratelimit:
+    enabled: true                   # 总开关
+    capacity: 4                     # 并发处理中的模型请求上限，超过则进队列
+    queue-capacity: 50              # 队列长度上限，满则直接拒绝
+    wait-timeout-seconds: 30        # 排队最大等待，超时拒绝
+    queue-key: "model:chat"         # 全局队列 key
+    notify-channel: "rlim:notify"   # Pub/Sub 通知频道
+    sweep-interval-ms: 3000         # 兜底推进扫描间隔
+  # 模型熔断降级（三态熔断器 + 候选模型切换 + 流式首包探测）
+  model:
+    fallback-models:                # 主模型失败时按序尝试的候选（同一 key/base-url，仅模型名不同）
+      - deepseek-chat
+    failure-threshold: 2            # 连续失败 N 次熔断打开
+    open-duration-ms: 30000         # 熔断打开时长
+    half-open-max-calls: 1          # HALF_OPEN 放行试调用数（1 次成功即恢复）
+    first-token-timeout-ms: 8000    # 流式首包超时
+  # 会话记忆：滑动窗口 + LLM 摘要压缩（溢出压缩，Redis + MySQL 双持久化）
+  memory:
+    window-size: 12                 # 滑动窗口条数，超过即压缩最旧部分
+    summary-enabled: true           # 摘要压缩开关
+    summary-max-chars: 1500         # 摘要长度上限（控制 Token 成本）
 
 logging:
   level:

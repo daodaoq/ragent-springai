@@ -6,13 +6,12 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ragent.ai.entity.RagQueryLog;
 import com.ragent.ai.mapper.RagQueryLogMapper;
 import com.ragent.ai.service.RagQueryLogService;
+import com.ragent.common.context.RagentThreadPools;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 查询日志采集实现：进程内异步线程池 + DB 写入（用户已确认不引入 MQ，量级为每次请求一条 INSERT）。
@@ -27,13 +26,8 @@ public class RagQueryLogServiceImpl implements RagQueryLogService {
 
     public RagQueryLogServiceImpl(RagQueryLogMapper mapper) {
         this.mapper = mapper;
-        this.executor = new ThreadPoolExecutor(1, 2, 30, TimeUnit.SECONDS,
-                new ArrayBlockingQueue<>(500),
-                r -> {
-                    Thread t = new Thread(r, "rag-query-log");
-                    t.setDaemon(true);
-                    return t;
-                },
+        // TTL + MDC 透传：worker 日志带 traceId/userId，与请求链路关联
+        this.executor = RagentThreadPools.newExecutor("rag-query-log", 1, 2, 500,
                 new ThreadPoolExecutor.DiscardOldestPolicy());
     }
 

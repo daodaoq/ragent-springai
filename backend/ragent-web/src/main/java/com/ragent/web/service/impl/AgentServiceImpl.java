@@ -8,6 +8,7 @@ import com.ragent.web.service.AgentService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -84,8 +85,13 @@ public class AgentServiceImpl implements AgentService {
                 .build();
 
         List<Message> messages = new ArrayList<>();
-        for (ChatMemoryService.ChatMessage cm : chatMemoryService.load(conversationId)) {
-            messages.add(cm.role().equals("user") ? new UserMessage(cm.content()) : new AssistantMessage(cm.content()));
+        // 带摘要注入：system 摘要消息 + 最近窗口消息（长对话关键上下文由摘要保留）
+        for (ChatMemoryService.ChatMessage cm : chatMemoryService.loadWithSummary(conversationId)) {
+            messages.add(switch (cm.role()) {
+                case "user" -> new UserMessage(cm.content());
+                case "system" -> new SystemMessage(cm.content());
+                default -> new AssistantMessage(cm.content());
+            });
         }
         messages.add(new UserMessage(question));
 

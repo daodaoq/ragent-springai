@@ -29,5 +29,15 @@
             <artifactId>lombok</artifactId>
             <optional>true</optional>
         </dependency>
+        <!-- 异步上下文透传：TTL 传递 RagentContext（traceId/userId），线程池隔离用 -->
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>transmittable-thread-local</artifactId>
+        </dependency>
+        <!-- Reactor 自动上下文传播所需的 ThreadLocalAccessor -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>context-propagation</artifactId>
+        </dependency>
     </dependencies>
 </project>

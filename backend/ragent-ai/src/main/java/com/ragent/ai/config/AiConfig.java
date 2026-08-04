@@ -1,24 +1,78 @@
 package com.ragent.ai.config;
 
+import com.ragent.ai.service.circuit.ChatModelRouter;
+import com.ragent.ai.service.circuit.CircuitBreaker;
+import com.ragent.ai.service.circuit.ModelEndpoint;
+import io.micrometer.observation.ObservationRegistry;
 import io.qdrant.client.QdrantClient;
 import io.qdrant.client.QdrantGrpcClient;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.vectorstore.qdrant.autoconfigure.QdrantVectorStoreProperties;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.retry.support.RetryTemplate;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Spring AI 配置。
- * 直接依赖 ChatModel（由 OpenAI starter 自动装配，base-url 指向 DeepSeek）。
- * 未配置 API Key 时 ChatModel 不存在，应用启动会明确报错提示配置。
+ * 主模型 ChatModel 由 OpenAI starter 自动装配（base-url 指向 DeepSeek，模型 deepseek-v4-flash）。
+ * 这里把它包进 {@link ChatModelRouter}（@Primary），并追加候选模型降级链
+ * （ragent.model.fallback-models，同一 key/base-url、仅模型名不同）——所有 ChatClient 调用
+ * 自动经过「三态熔断 + 首包探测 + 候选切换」，业务代码零改动。
+ * 未配置 API Key 时主 ChatModel 不存在，应用启动会明确报错提示配置。
  */
 @Configuration
 public class AiConfig {
 
+    private final ModelFailoverProperties modelFailoverProps;
+
+    public AiConfig(ModelFailoverProperties modelFailoverProps) {
+        this.modelFailoverProps = modelFailoverProps;
+    }
+
     @Bean
     ChatClient chatClient(ChatModel chatModel) {
         return ChatClient.builder(chatModel).build();
+    }
+
+    /**
+     * 模型路由装饰器（@Primary ChatModel）：主模型 + 候选模型降级链。
+     */
+    @Bean
+    @Primary
+    ChatModelRouter chatModelRouter(
+            OpenAiChatModel primaryModel,
+            ToolCallingManager toolCallingManager,
+            RetryTemplate retryTemplate,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider,
+            @Value("${spring.ai.openai.api-key:}") String apiKey,
+            @Value("${spring.ai.openai.base-url:https://api.deepseek.com}") String baseUrl) {
+        // ObservationRegistry 在无 actuator/micrometer 时可能不存在，容忍缺失退化为 NOOP（与 Spring AI 自动装配一致）
+        ObservationRegistry observationRegistry = observationRegistryProvider.getIfAvailable(() -> ObservationRegistry.NOOP);
+        int threshold = modelFailoverProps.getFailureThreshold();
+        long openMs = modelFailoverProps.getOpenDurationMs();
+        int halfOpen = modelFailoverProps.getHalfOpenMaxCalls();
+        List<ModelEndpoint> endpoints = new ArrayList<>();
+        endpoints.add(new ModelEndpoint("primary", primaryModel,
+                new CircuitBreaker("primary", threshold, openMs, halfOpen)));
+        for (String name : modelFailoverProps.getFallbackModels()) {
+            OpenAiApi api = OpenAiApi.builder().apiKey(apiKey).baseUrl(baseUrl).build();
+            OpenAiChatOptions opts = OpenAiChatOptions.builder().model(name).temperature(0.7).build();
+            ChatModel fallback = new OpenAiChatModel(api, opts, toolCallingManager, retryTemplate, observationRegistry);
+            endpoints.add(new ModelEndpoint(name, fallback,
+                    new CircuitBreaker(name, threshold, openMs, halfOpen)));
+        }
+        return new ChatModelRouter(endpoints, modelFailoverProps.getFirstTokenTimeoutMs());
     }
 
     /**

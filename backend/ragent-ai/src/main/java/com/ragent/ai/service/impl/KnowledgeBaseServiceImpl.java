@@ -31,9 +31,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.ragent.common.context.RagentThreadPools;
+
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -57,8 +58,9 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     /** 批量上传时并行处理文件数：真正的多线程，又不至于同时打爆向量化接口 */
     private static final int FILE_CONCURRENCY = 4;
 
-    /** 批量上传线程池（应用生命周期内常驻） */
-    private static final ExecutorService UPLOAD_EXECUTOR = Executors.newFixedThreadPool(FILE_CONCURRENCY);
+    /** 批量上传线程池（应用生命周期内常驻；TTL+MDC 透传，线程名 kb-upload） */
+    private static final ExecutorService UPLOAD_EXECUTOR = RagentThreadPools.newExecutor("kb-upload",
+            FILE_CONCURRENCY, FILE_CONCURRENCY, 100, new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
 
     /** 从服务端错误 JSON 中提取 message 字段，避免把整段原始 JSON 抛给前端 */
     private static final Pattern ERROR_MESSAGE_PATTERN = Pattern.compile("\"message\"\\s*:\\s*\"([^\"]*)\"");

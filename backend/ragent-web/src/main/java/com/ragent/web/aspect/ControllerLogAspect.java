@@ -1,7 +1,7 @@
 package com.ragent.web.aspect;
 
 import cn.dev33.satoken.stp.StpUtil;
-import com.ragent.common.log.LogHelper;
+import com.ragent.common.context.RagentContext;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.multipart.MultipartFile;
+import reactor.core.publisher.Flux;
 
 import java.lang.reflect.Parameter;
 import java.lang.reflect.RecordComponent;
@@ -28,10 +29,8 @@ import java.util.UUID;
 @Component
 public class ControllerLogAspect {
 
-    private static final String[] MDC_KEYS = {"userId", "module", "action", "traceId", "ip"};
-
     /**
-     * 环绕切面：记录 Controller 方法的调用日志。
+     * 环绕切面：记录 Controller 方法的调用日志，并把请求上下文（traceId/userId/ip）写入 {@link RagentContext}。
      */
     @Around("execution(public * com.ragent.web.controller..*(..))")
     public Object logController(ProceedingJoinPoint pjp) throws Throwable {
@@ -43,9 +42,11 @@ public class ControllerLogAspect {
 
         // 获取当前用户 ID（如果有登录态）
         String userId = "anon";
+        Long userIdLong = null;
         try {
             if (StpUtil.isLogin()) {
                 userId = StpUtil.getLoginIdAsString();
+                userIdLong = Long.valueOf(userId);
             }
         } catch (Exception ignored) {
             // Sa-Token 未初始化时不报错
@@ -54,12 +55,15 @@ public class ControllerLogAspect {
         RequestInfo req = requestInfo();
         String params = buildParams(signature, pjp.getArgs());
 
-        // 注入 MDC 上下文：随日志写入 ES 结构字段，供日志查询按模块/用户/操作筛选
-        LogHelper.setUserId(userId);
-        LogHelper.setModule(module);
-        LogHelper.setAction(methodName);
-        LogHelper.setTraceId(UUID.randomUUID().toString());
-        LogHelper.setIp(req.ip);
+        // 注入请求上下文（TTL + MDC 同步）：traceId/userId 随异步线程透传，ELK 按模块/用户/操作筛选
+        RagentContext ctx = RagentContext.builder()
+                .traceId(UUID.randomUUID().toString())
+                .userId(userIdLong)
+                .ip(req.ip)
+                .module(module)
+                .action(methodName)
+                .build();
+        RagentContext.set(ctx);
         try {
             log.info("[{}] {} {}.{} | userId={} | params={}",
                     req.method, req.url, className, methodName, userId, params);
@@ -67,7 +71,7 @@ public class ControllerLogAspect {
             Object result = pjp.proceed();
             long elapsed = System.currentTimeMillis() - start;
             log.info("[{}] {}.{} | {}ms OK", req.method, className, methodName, elapsed);
-            return result;
+            return wrapReactiveIfNeeded(result, ctx);
         } catch (Throwable e) {
             long elapsed = System.currentTimeMillis() - start;
             log.error("[{}] {}.{} | {}ms ERROR | {}: {}",
@@ -75,8 +79,23 @@ public class ControllerLogAspect {
                     e.getClass().getSimpleName(), e.getMessage());
             throw e;
         } finally {
-            LogHelper.removeContext(MDC_KEYS);
+            RagentContext.clear();
         }
+    }
+
+    /**
+     * SSE 等 reactive 返回值：在订阅线程恢复 {@link RagentContext}，
+     * 使 traceId/userId 随流自动传播到 subscribeOn 调度线程（Agent 工具循环 / 查询日志落库 / 记忆摘要）。
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Object wrapReactiveIfNeeded(Object result, RagentContext ctx) {
+        if (result instanceof Flux flux) {
+            return Flux.defer(() -> {
+                RagentContext.set(ctx);
+                return flux;
+            }).doFinally(sig -> RagentContext.clear());
+        }
+        return result;
     }
 
     /** 取类所在包最后一段作为模块名（controller/service/...），与前端日志页的模块筛选对齐 */

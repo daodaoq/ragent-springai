@@ -2,6 +2,7 @@ package com.ragent.web.agent;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ragent.common.context.RagentContext;
 import com.ragent.common.exception.BusinessException;
 import com.ragent.web.entity.Tag;
 import com.ragent.web.service.QuestionService;
@@ -66,10 +67,22 @@ public class AgentTools {
 
     @Tool(description = "当前登录用户信息；未登录时返回 null。")
     public String getCurrentUserInfo() {
-        if (!StpUtil.isLogin()) {
+        Long uid = null;
+        try {
+            if (StpUtil.isLogin()) {
+                uid = StpUtil.getLoginIdAsLong();
+            }
+        } catch (Exception ignored) {
+            // 异步线程可能无 Sa-Token 上下文，退化为透传的 RagentContext
+        }
+        if (uid == null) {
+            RagentContext ctx = RagentContext.current();
+            uid = ctx == null ? null : ctx.userId();
+        }
+        if (uid == null) {
             return toJson(null);
         }
-        return toJson(userService.me());
+        return toJson(userService.me(uid));
     }
 
     private String toJson(Object o) {

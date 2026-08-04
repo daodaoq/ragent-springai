@@ -8,6 +8,7 @@ import com.ragent.ai.service.QueryPipeline;
 import com.ragent.ai.service.RagQueryLogService;
 import com.ragent.ai.service.RagService;
 import com.ragent.ai.service.RetrievalService;
+import com.ragent.common.context.RagentContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
@@ -139,18 +140,41 @@ public class RagServiceImpl implements RagService {
         List<Document> docs = retrievalService.retrieve(toRetrievalQuery(pq), props.getTopK());
         String sourcesJson = sourcesJson(docs);
         StringBuilder answer = new StringBuilder();
+        // 请求线程上下文（TTL）：WebClient 终态线程不自动携带 MDC，捕获并在 doOnComplete/doOnError 恢复，
+        // 使查询日志、记忆摘要等异步池提交带上 traceId/userId
+        RagentContext ctx = RagentContext.current();
         return Flux.concat(
                 Flux.just(sse("rewritten", rewrittenJson(pq))),
                 Flux.just(sse("sources", sourcesJson)),
                 streamAnswer(question, docs)
                         .doOnNext(answer::append)
                         .doOnComplete(() -> {
-                            chatMemoryService.append(conversationId, question, answer.toString());
-                            recordQuery(userId, conversationId, question, pq, false, sourcesJson,
-                                    answer.toString(), (System.nanoTime() - start) / 1_000_000, null);
+                            if (ctx != null) {
+                                RagentContext.set(ctx);
+                            }
+                            try {
+                                chatMemoryService.append(conversationId, question, answer.toString());
+                                recordQuery(userId, conversationId, question, pq, false, sourcesJson,
+                                        answer.toString(), (System.nanoTime() - start) / 1_000_000, null);
+                            } finally {
+                                if (ctx != null) {
+                                    RagentContext.clear();
+                                }
+                            }
                         })
-                        .doOnError(e -> recordQuery(userId, conversationId, question, pq, false, sourcesJson,
-                                answer.toString(), (System.nanoTime() - start) / 1_000_000, shortMsg(e)))
+                        .doOnError(e -> {
+                            if (ctx != null) {
+                                RagentContext.set(ctx);
+                            }
+                            try {
+                                recordQuery(userId, conversationId, question, pq, false, sourcesJson,
+                                        answer.toString(), (System.nanoTime() - start) / 1_000_000, shortMsg(e));
+                            } finally {
+                                if (ctx != null) {
+                                    RagentContext.clear();
+                                }
+                            }
+                        })
                         .map(c -> sse("content", c))
         );
     }
