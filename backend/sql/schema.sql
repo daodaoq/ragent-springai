@@ -74,10 +74,13 @@ CREATE TABLE IF NOT EXISTS `question_tag` (
 CREATE TABLE IF NOT EXISTS `kb_document` (
   `id`           BIGINT       NOT NULL COMMENT '主键(雪花ID)',
   `filename`     VARCHAR(255) NOT NULL COMMENT '文件名',
-  `content_type` VARCHAR(50)  DEFAULT NULL COMMENT '文件类型',
+  `content_type` VARCHAR(100) DEFAULT NULL COMMENT '文件类型',
   `size`         INT          NOT NULL DEFAULT 0 COMMENT '字节数',
   `object_key`   VARCHAR(255) DEFAULT NULL COMMENT 'MinIO 原始文件 key（失败可据此重试）',
   `file_hash`    VARCHAR(64)  DEFAULT NULL COMMENT '原文件内容 SHA-256（内容去重判断）',
+  `chunk_max_chars`    INT   DEFAULT NULL COMMENT '切片参数覆盖: 单切片最大字符数(NULL=全局默认)',
+  `chunk_overlap_chars` INT  DEFAULT NULL COMMENT '切片参数覆盖: 重叠字符数(NULL=全局默认)',
+  `chunk_semantic`      TINYINT DEFAULT NULL COMMENT '切片参数覆盖: 语义分片(NULL=全局默认)',
   `chunk_count`  INT          NOT NULL DEFAULT 0 COMMENT '切片数',
   `status`       VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING/READY/FAILED',
   `deleted`      TINYINT      NOT NULL DEFAULT 0,
@@ -86,6 +89,16 @@ CREATE TABLE IF NOT EXISTS `kb_document` (
   PRIMARY KEY (`id`),
   KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文档表';
+
+-- 全局切片参数设置（单行；前端可改，per-doc 覆盖优先级更高）
+CREATE TABLE IF NOT EXISTS `kb_chunk_settings` (
+  `id`              TINYINT   NOT NULL DEFAULT 1 COMMENT '固定单行',
+  `max_chunk_chars` INT       NOT NULL DEFAULT 800 COMMENT '单切片最大字符数',
+  `overlap_chars`   INT       NOT NULL DEFAULT 100 COMMENT '重叠字符数',
+  `semantic_enabled` TINYINT  NOT NULL DEFAULT 0 COMMENT '语义分片开关',
+  `updated_at`      DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库全局切片参数';
 
 CREATE TABLE IF NOT EXISTS `document_chunk` (
   `id`           BIGINT      NOT NULL COMMENT '主键(雪花ID)',

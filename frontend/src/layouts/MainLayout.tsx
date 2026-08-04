@@ -35,6 +35,11 @@ export default function MainLayout() {
                 知识库
               </Link>
               {user && (
+                <Link to="/kb/quality" className="hover:text-blue-600">
+                  切片质量
+                </Link>
+              )}
+              {user && (
                 <Link to="/dashboard" className="hover:text-blue-600">
                   数据看板
                 </Link>

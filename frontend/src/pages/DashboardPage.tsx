@@ -7,6 +7,7 @@ import {
   getTagDistribution,
   getTopAskers,
 } from '../api/stats'
+import { useChart } from '../components/useChart'
 import type { FeedbackStats, StatsOverview, TagCountRow, TopAskerRow, TrendRow } from '../types'
 
 interface Data {
@@ -15,28 +16,6 @@ interface Data {
   tags?: TagCountRow[]
   askers?: TopAskerRow[]
   feedback?: FeedbackStats
-}
-
-/**
- * ECharts 挂载 hook：React 19 StrictMode 双挂载下，cleanup 里 dispose 后重新 init，
- * 避免重复图表；监听 resize 自适应。
- */
-function useChart<T>(
-  ref: React.RefObject<HTMLDivElement | null>,
-  data: T | undefined,
-  build: (data: T) => echarts.EChartsOption,
-) {
-  useEffect(() => {
-    if (!ref.current) return
-    const chart = echarts.init(ref.current)
-    if (data) chart.setOption(build(data))
-    const onResize = () => chart.resize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      chart.dispose()
-    }
-  }, [ref, data, build])
 }
 
 function buildTrendOption(rows: TrendRow[]): echarts.EChartsOption {

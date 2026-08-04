@@ -14,11 +14,20 @@ public interface KnowledgeBaseService {
 
     KbDocument upload(MultipartFile file);
 
+    /** 单文件上传，可携带该文件的切片参数覆盖（null 字段 = 用全局默认） */
+    KbDocument upload(MultipartFile file, ChunkParams params);
+
     /**
      * 批量上传：一次接收多个文件，后端线程池并行处理 + 嵌入按 10 条/批自动拆分，
-     * 每个文件独立返回结果（单个失败不拖垮整批）。
+     * 每个文件独立返回结果（单个失败不拖垮整批）。params 与 files 按下标对齐，可为 null。
      */
-    List<UploadResult> uploadBatch(List<MultipartFile> files);
+    List<UploadResult> uploadBatch(List<MultipartFile> files, List<ChunkParams> params);
+
+    /**
+     * 重新切片：从 MinIO 读原始文件，用新参数覆盖重新切分+向量化（先清旧切片/向量）。
+     * params 全为 null 表示重置回全局默认。
+     */
+    KbDocument rechunk(Long id, ChunkParams params);
 
     /**
      * 重试处理失败的文档：从 MinIO 读取已保存的原始文件重新切分+向量化，无需重新上传。
@@ -44,6 +53,9 @@ public interface KnowledgeBaseService {
 
     /** 批量上传的单文件结果 */
     record UploadResult(String filename, boolean success, String message) {}
+
+    /** 切片参数（上传携带 / 重新切片）：null 字段 = 用全局默认（rechunk 时=重置回全局） */
+    record ChunkParams(Integer maxChunkChars, Integer overlapChars, Boolean semantic) {}
 
     /** 原文内容：filename + 提取后的全文文本 + 行数（含文件名/类型信息） */
     record SourceText(String filename, String contentType, String text, int lineCount) {}

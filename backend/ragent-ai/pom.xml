@@ -48,15 +48,19 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-vector-store-qdrant</artifactId>
         </dependency>
-        <!-- PDF 文档解析 -->
+        <!-- PDF 文档解析（PagePdfDocumentReader，保留逐行页码） -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-pdf-document-reader</artifactId>
         </dependency>
-        <!-- Word .docx 解析（Apache POI；版本由 spring-boot-starter-parent 管理） -->
+        <!-- 通用文档解析：Apache Tika（docx/doc/xlsx/pptx/rtf → 带标题/表格结构） -->
         <dependency>
-            <groupId>org.apache.poi</groupId>
-            <artifactId>poi-ooxml</artifactId>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parsers-standard-package</artifactId>
         </dependency>
 
         <!-- Lombok -->

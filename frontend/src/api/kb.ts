@@ -10,7 +10,26 @@ export interface KbDocument {
   status: string
   /** 原文件内容 SHA-256 */
   fileHash?: string | null
+  /** 切片参数覆盖（null = 用全局默认） */
+  chunkMaxChars?: number | null
+  chunkOverlapChars?: number | null
+  chunkSemantic?: boolean | null
   createdAt: string
+}
+
+/** 切片参数：null 字段 = 用全局默认（rechunk 时 = 重置回全局） */
+export interface ChunkParams {
+  maxChunkChars?: number | null
+  overlapChars?: number | null
+  semantic?: boolean | null
+}
+
+/** 批量上传 configs 里单条（按 filename 与文件对齐） */
+export interface UploadConfig {
+  filename: string
+  maxChunkChars?: number | null
+  overlapChars?: number | null
+  semantic?: boolean | null
 }
 
 /** 文档切片（chunkIndex 从 0 开始） */
@@ -41,18 +60,30 @@ export interface UploadResult {
 }
 
 // 上传涉及切分+向量化，大文档/批量场景耗时远超默认 15s 超时，这里单独不设超时
-export const uploadDocument = (file: File) => {
+export const uploadDocument = (file: File, params?: ChunkParams) => {
   const form = new FormData()
   form.append('file', file)
-  return http.post('/kb/documents', form, { timeout: 0 }) as Promise<ApiResult<KbDocument>>
+  const q: Record<string, string> = {}
+  if (params?.maxChunkChars != null) q.maxChunkChars = String(params.maxChunkChars)
+  if (params?.overlapChars != null) q.overlapChars = String(params.overlapChars)
+  if (params?.semantic != null) q.semantic = String(params.semantic)
+  return http.post('/kb/documents', form, {
+    timeout: 0,
+    params: q,
+  }) as Promise<ApiResult<KbDocument>>
 }
 
-/** 批量上传：一次提交多个文件，后端线程池并行处理并逐文件返回结果 */
-export const uploadDocuments = (files: File[]) => {
+/** 批量上传：一次提交多个文件，后端线程池并行处理并逐文件返回结果；configs 按 filename 对齐每文件切片参数 */
+export const uploadDocuments = (files: File[], configs?: UploadConfig[]) => {
   const form = new FormData()
   files.forEach((f) => form.append('files', f))
+  if (configs && configs.length) form.append('configs', JSON.stringify(configs))
   return http.post('/kb/documents/batch', form, { timeout: 0 }) as Promise<ApiResult<UploadResult[]>>
 }
+
+/** 重新切片：从 MinIO 读原始文件按新参数重新切分+向量化（null 字段 = 重置回全局默认） */
+export const rechunkDocument = (id: string, params?: ChunkParams) =>
+  http.post(`/kb/documents/${id}/rechunk`, params ?? {}) as Promise<ApiResult<KbDocument>>
 
 export const listDocuments = () =>
   http.get('/kb/documents') as Promise<ApiResult<KbDocument[]>>

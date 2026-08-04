@@ -32,6 +32,15 @@ public class KbDocument {
     /** 原文件内容 SHA-256（十六进制），用于判断同名文件是否真的变化 */
     private String fileHash;
 
+    /** 切片参数覆盖：单切片最大字符数（null = 用全局默认） */
+    private Integer chunkMaxChars;
+
+    /** 切片参数覆盖：重叠字符数（null = 用全局默认） */
+    private Integer chunkOverlapChars;
+
+    /** 切片参数覆盖：语义分片开关（null = 用全局默认） */
+    private Boolean chunkSemantic;
+
     private Integer chunkCount;
 
     /** PENDING / READY / FAILED */

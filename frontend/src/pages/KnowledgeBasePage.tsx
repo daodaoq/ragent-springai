@@ -11,10 +11,19 @@ import {
   type DocumentChunk,
   type KbDocument,
   type KbDocumentSource,
+  type UploadConfig,
   type UploadResult,
 } from '../api/kb'
+import { getChunkSettings } from '../api/quality'
 import { useAuthStore } from '../store/auth'
 import { formatTime } from '../utils/format'
+
+/** 上传参数面板里单个文件的切片参数；semantic 三态：'default'=全局默认 / 'true' / 'false' */
+interface ParamEntry {
+  maxChunkChars: string
+  overlapChars: string
+  semantic: 'default' | 'true' | 'false'
+}
 
 export default function KnowledgeBasePage() {
   const { user } = useAuthStore()
@@ -25,12 +34,18 @@ export default function KnowledgeBasePage() {
   // 上传失败详情（可展开查看全部失败原因）
   const [uploadErrors, setUploadErrors] = useState<{ filename: string; message: string }[]>([])
   const [showUploadErrors, setShowUploadErrors] = useState(false)
+  // 全局切片参数（作为上传参数面板的默认值）
+  const [globalParams, setGlobalParams] = useState({ maxChunkChars: 800, overlapChars: 100, semanticEnabled: false })
+  // 上传参数面板：选文件后先逐文件确认切片参数
+  const [paramDialog, setParamDialog] = useState<File[] | null>(null)
+  const [paramValues, setParamValues] = useState<Record<string, ParamEntry>>({})
   // 同名覆盖确认（Windows 复制冲突风格：把决定权交给用户）
   const [dupeDialog, setDupeDialog] = useState<string[] | null>(null)
   const [dupeChecked, setDupeChecked] = useState<Record<string, boolean>>({})
   // 上传完成后的提示（如「N 个覆盖了旧版本」）
   const [notice, setNotice] = useState('')
   const pendingFilesRef = useRef<File[]>([])
+  const paramDefaultsRef = useRef<Record<string, ParamEntry>>({})
   const fileRef = useRef<HTMLInputElement>(null)
   // 切片查看模态框
   const [chunkDoc, setChunkDoc] = useState<KbDocument | null>(null)
@@ -65,11 +80,14 @@ export default function KnowledgeBasePage() {
 
   useEffect(() => {
     load()
+    getChunkSettings()
+      .then((res) => setGlobalParams(res.data))
+      .catch(() => {}) // 取不到全局设置时用默认值兜底
   }, [load])
 
   if (!user) return <Navigate to="/login" replace />
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
     // 批内同名去重（后选者覆盖先选者），避免同批两个同名文件被后端并发线程互相覆盖
@@ -78,22 +96,47 @@ export default function KnowledgeBasePage() {
     const list = Array.from(byName.values())
     e.target.value = '' // 立即清空，保证下次重选同一批文件也能触发 change
 
-    // 与已入库文档比对：存在同名先问用户是否覆盖，不直接覆盖（把决定权交给用户）
+    // 先打开切片参数面板：可逐文件改 maxChunkChars/overlapChars/语义分片（默认取全局设置）
+    pendingFilesRef.current = list
+    const defaults: Record<string, ParamEntry> = {}
+    for (const f of list) {
+      defaults[f.name] = {
+        maxChunkChars: String(globalParams.maxChunkChars),
+        overlapChars: String(globalParams.overlapChars),
+        semantic: globalParams.semanticEnabled ? 'true' : 'false',
+      }
+    }
+    paramDefaultsRef.current = defaults
+    setParamValues(defaults)
+    setParamDialog(list)
+  }
+
+  /** 参数面板「下一步」：保存参数，然后同名文件弹覆盖确认，否则直接上传 */
+  const confirmParamsAndContinue = () => {
+    const list = pendingFilesRef.current
+    setParamDialog(null)
     const existingNames = new Set(docs.map((d) => d.filename))
     const dupes = list.filter((f) => existingNames.has(f.name))
     if (dupes.length > 0) {
       const checked: Record<string, boolean> = {}
       dupes.forEach((f) => (checked[f.name] = true)) // 默认勾选覆盖：用户主动选的文件通常就是要更新的
-      pendingFilesRef.current = list
       setDupeChecked(checked)
       setDupeDialog(dupes.map((f) => f.name))
       return
     }
-    void doUpload(list, [], 0)
+    void doUpload(list, [], 0, paramValues)
   }
 
-  /** 实际执行上传（overwriteNames=本批要覆盖的旧文档名，skippedCount=被用户跳过的重复文件数） */
-  const doUpload = async (list: File[], overwriteNames: string[], skippedCount: number) => {
+  /**
+   * 实际执行上传（overwriteNames=本批要覆盖的旧文档名，skippedCount=被用户跳过的重复文件数，
+   * paramsMap=逐文件切片参数，按 filename 对齐，随 configs 字段发送）。
+   */
+  const doUpload = async (
+    list: File[],
+    overwriteNames: string[],
+    skippedCount: number,
+    paramsMap: Record<string, ParamEntry> = {},
+  ) => {
     setUploading(true)
     setUploadProgress({ done: 0, total: list.length })
     setError('')
@@ -106,7 +149,17 @@ export default function KnowledgeBasePage() {
       const allResults: UploadResult[] = []
       for (let i = 0; i < list.length; i += BATCH_SIZE) {
         const batch = list.slice(i, i + BATCH_SIZE)
-        const res = await uploadDocuments(batch)
+        const configs: UploadConfig[] = batch
+          .filter((f) => paramsMap[f.name])
+          .map((f) => {
+            const p = paramsMap[f.name]
+            const c: UploadConfig = { filename: f.name }
+            if (p.maxChunkChars.trim() !== '') c.maxChunkChars = Number(p.maxChunkChars)
+            if (p.overlapChars.trim() !== '') c.overlapChars = Number(p.overlapChars)
+            if (p.semantic !== 'default') c.semantic = p.semantic === 'true'
+            return c
+          })
+        const res = await uploadDocuments(batch, configs)
         allResults.push(...res.data)
         setUploadProgress({ done: Math.min(i + batch.length, list.length), total: list.length })
       }
@@ -140,7 +193,7 @@ export default function KnowledgeBasePage() {
     const list = pendingFilesRef.current.filter((f) => !dupes.includes(f.name) || overwriteSet.has(f.name))
     setDupeDialog(null)
     pendingFilesRef.current = []
-    void doUpload(list, overwriteNames, skipped.length)
+    void doUpload(list, overwriteNames, skipped.length, paramValues)
   }
 
   const handleDelete = (d: KbDocument) => {
@@ -259,7 +312,7 @@ export default function KnowledgeBasePage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-lg font-bold text-slate-800">📚 知识库管理</h1>
-          <p className="text-sm text-slate-500 mt-0.5">上传文档构建实验室知识库，供 AI 检索问答使用（支持 .md / .txt / .pdf / .docx）</p>
+          <p className="text-sm text-slate-500 mt-0.5">上传文档构建实验室知识库，供 AI 检索问答使用（支持 .md / .txt / .pdf / .docx / .doc / .xlsx / .pptx / .rtf）</p>
         </div>
         <div className="flex items-center gap-3">
           {uploading && uploadProgress && (
@@ -282,7 +335,7 @@ export default function KnowledgeBasePage() {
           >
             上传文档
           </button>
-          <input ref={fileRef} type="file" accept=".md,.txt,.pdf,.docx" multiple className="hidden" onChange={handleUpload} />
+          <input ref={fileRef} type="file" accept=".md,.txt,.pdf,.docx,.doc,.xlsx,.pptx,.rtf" multiple className="hidden" onChange={handleUpload} />
         </div>
       </div>
 
@@ -398,6 +451,102 @@ export default function KnowledgeBasePage() {
           </table>
         )}
       </div>
+
+      {paramDialog && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          onClick={() => {
+            setParamDialog(null)
+            pendingFilesRef.current = []
+          }}
+        >
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-slate-200">
+              <h2 className="font-bold text-slate-800">⚙️ 切片参数（{paramDialog.length} 个文件）</h2>
+              <p className="text-xs text-slate-400 mt-0.5">每个文件可单独设置切片参数；留空 = 使用全局默认</p>
+            </div>
+            <div className="max-h-[50vh] overflow-y-auto px-5 py-3 space-y-2">
+              {paramDialog.map((f) => {
+                const v = paramValues[f.name] ?? paramDefaultsRef.current[f.name]
+                if (!v) return null
+                return (
+                  <div key={f.name} className="border border-slate-200 rounded-lg px-3 py-2">
+                    <div className="text-sm text-slate-700 font-medium truncate mb-1.5" title={f.name}>
+                      {f.name}
+                    </div>
+                    <div className="flex items-end gap-2 text-xs text-slate-500">
+                      <label className="flex-1">
+                        <span className="block">maxChunkChars</span>
+                        <input
+                          className="mt-0.5 w-full border border-slate-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          type="number"
+                          value={v.maxChunkChars}
+                          onChange={(e) =>
+                            setParamValues((s) => ({ ...s, [f.name]: { ...v, maxChunkChars: e.target.value } }))
+                          }
+                        />
+                      </label>
+                      <label className="flex-1">
+                        <span className="block">overlapChars</span>
+                        <input
+                          className="mt-0.5 w-full border border-slate-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          type="number"
+                          value={v.overlapChars}
+                          onChange={(e) =>
+                            setParamValues((s) => ({ ...s, [f.name]: { ...v, overlapChars: e.target.value } }))
+                          }
+                        />
+                      </label>
+                      <label className="flex-1">
+                        <span className="block">语义分片</span>
+                        <select
+                          className="mt-0.5 w-full border border-slate-300 rounded-lg px-2 py-1 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          value={v.semantic}
+                          onChange={(e) =>
+                            setParamValues((s) => ({
+                              ...s,
+                              [f.name]: { ...v, semantic: e.target.value as ParamEntry['semantic'] },
+                            }))
+                          }
+                        >
+                          <option value="default">全局默认</option>
+                          <option value="true">开启</option>
+                          <option value="false">关闭</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="flex items-center justify-between px-5 py-4 border-t border-slate-200">
+              <button
+                onClick={() => setParamValues({ ...paramDefaultsRef.current })}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm hover:bg-slate-50"
+              >
+                全部套用默认
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setParamDialog(null)
+                    pendingFilesRef.current = []
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-slate-500 text-sm hover:bg-slate-50"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmParamsAndContinue}
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700"
+                >
+                  下一步（{paramDialog.length} 个）
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {dupeDialog && (
         <div

@@ -20,7 +20,7 @@ public interface DocumentChunkMapper extends BaseMapper<DocumentChunk> {
                    dc.heading_path, dc.line_start, dc.line_end, dc.char_start, dc.char_end, dc.page,
                    MATCH(dc.content) AGAINST(#{keyword} IN BOOLEAN MODE) AS relevance
             FROM document_chunk dc
-            JOIN kb_document d ON d.id = dc.document_id AND d.deleted = 0
+            JOIN kb_document d ON d.id = dc.document_id AND d.deleted = 0 AND d.status = 'READY'
             WHERE MATCH(dc.content) AGAINST(#{keyword} IN BOOLEAN MODE)
             ORDER BY relevance DESC
             LIMIT #{limit}

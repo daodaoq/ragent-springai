@@ -7,6 +7,7 @@ import QuestionDetailPage from '../pages/QuestionDetailPage'
 import AskPage from '../pages/AskPage'
 import ChatPage from '../pages/ChatPage'
 import KnowledgeBasePage from '../pages/KnowledgeBasePage'
+import ChunkQualityPage from '../pages/ChunkQualityPage'
 import DashboardPage from '../pages/DashboardPage'
 import FeedbackPage from '../pages/FeedbackPage'
 import ProfilePage from '../pages/ProfilePage'
@@ -46,6 +47,14 @@ export default function AppRouter() {
           />
           <Route path="/ai" element={<ChatPage />} />
           <Route path="/kb" element={<KnowledgeBasePage />} />
+          <Route
+            path="/kb/quality"
+            element={
+              <RequireAuth>
+                <ChunkQualityPage />
+              </RequireAuth>
+            }
+          />
           <Route
             path="/dashboard"
             element={

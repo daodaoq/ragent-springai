@@ -80,6 +80,10 @@ ragent:
   chunking:
     max-chunk-chars: 800
     overlap-chars: 100
+    # 语义分片：长且无标题的小节按段落 embedding 相似度断片（默认关闭，开启后上传/重切会多调一次嵌入）
+    semantic-enabled: false
+    semantic-threshold: 0.5
+    semantic-min-blocks: 3
   # P4 检索配置（混合检索 + 重排）
   retrieval:
     # 向量/关键词各自召回候选数

@@ -1,11 +1,15 @@
 package com.ragent.web.controller;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
-import com.ragent.common.result.PageResult;
-import com.ragent.common.result.Result;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ragent.ai.entity.DocumentChunk;
 import com.ragent.ai.entity.KbDocument;
 import com.ragent.ai.service.KnowledgeBaseService;
+import com.ragent.common.exception.BusinessException;
+import com.ragent.common.exception.ErrorCode;
+import com.ragent.common.result.PageResult;
+import com.ragent.common.result.Result;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -19,7 +23,11 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 知识库管理接口
@@ -30,19 +38,61 @@ import java.util.List;
 public class KnowledgeBaseController {
 
     private final KnowledgeBaseService kbService;
+    private final ObjectMapper objectMapper;
 
     @PostMapping(value = "/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @SaCheckLogin
-    public Result<KbDocument> upload(@RequestPart("file") MultipartFile file) {
-        return Result.success(kbService.upload(file));
+    public Result<KbDocument> upload(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(required = false) Integer maxChunkChars,
+            @RequestParam(required = false) Integer overlapChars,
+            @RequestParam(required = false) Boolean semantic) {
+        return Result.success(kbService.upload(file,
+                new KnowledgeBaseService.ChunkParams(maxChunkChars, overlapChars, semantic)));
     }
 
-    /** 批量上传：一次提交多个文件，后端线程池并行处理，逐文件返回结果 */
+    /**
+     * 批量上传：一次提交多个文件，后端线程池并行处理，逐文件返回结果。
+     * configs 为可选 JSON 数组 [{filename, maxChunkChars?, overlapChars?, semantic?}]，按 filename 对齐各文件参数。
+     */
     @PostMapping(value = "/documents/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @SaCheckLogin
     public Result<List<KnowledgeBaseService.UploadResult>> uploadBatch(
-            @RequestPart("files") List<MultipartFile> files) {
-        return Result.success(kbService.uploadBatch(files));
+            @RequestPart("files") List<MultipartFile> files,
+            @RequestParam(value = "configs", required = false) String configs) {
+        return Result.success(kbService.uploadBatch(files, parseBatchConfigs(files, configs)));
+    }
+
+    /** 重新切片：按新参数覆盖重新切分+向量化（先清旧切片/向量），null 字段 = 重置回全局默认 */
+    @PostMapping("/documents/{id}/rechunk")
+    @SaCheckLogin
+    public Result<KbDocument> rechunk(@PathVariable Long id,
+                                      @RequestBody(required = false) KnowledgeBaseService.ChunkParams params) {
+        return Result.success(kbService.rechunk(id, params));
+    }
+
+    /** 解析批量上传的 configs JSON（[{filename,...}]）→ 与 files 按 filename 对齐的 ChunkParams 列表 */
+    private List<KnowledgeBaseService.ChunkParams> parseBatchConfigs(List<MultipartFile> files, String configs) {
+        if (configs == null || configs.isBlank()) {
+            return Collections.emptyList();
+        }
+        try {
+            List<UploadConfig> list = objectMapper.readValue(configs, new TypeReference<>() {});
+            Map<String, KnowledgeBaseService.ChunkParams> byName = new HashMap<>();
+            for (UploadConfig c : list) {
+                if (c.filename() != null) {
+                    byName.put(c.filename(),
+                            new KnowledgeBaseService.ChunkParams(c.maxChunkChars(), c.overlapChars(), c.semantic()));
+                }
+            }
+            return files.stream().map(f -> byName.get(f.getOriginalFilename())).collect(Collectors.toList());
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "切片参数 configs 格式错误");
+        }
+    }
+
+    /** 批量上传 configs JSON 里的单条记录（按 filename 与文件对齐） */
+    private record UploadConfig(String filename, Integer maxChunkChars, Integer overlapChars, Boolean semantic) {
     }
 
     @GetMapping("/documents")

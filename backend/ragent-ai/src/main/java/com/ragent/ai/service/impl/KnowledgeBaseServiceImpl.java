@@ -2,10 +2,14 @@ package com.ragent.ai.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.ragent.ai.config.ChunkingProperties;
 import com.ragent.ai.entity.DocumentChunk;
+import com.ragent.ai.entity.KbChunkSettings;
 import com.ragent.ai.entity.KbDocument;
 import com.ragent.ai.mapper.DocumentChunkMapper;
+import com.ragent.ai.mapper.KbChunkSettingsMapper;
 import com.ragent.ai.mapper.KbDocumentMapper;
+import com.ragent.ai.service.AiRetry;
 import com.ragent.ai.service.ChunkingService;
 import com.ragent.ai.service.KnowledgeBaseService;
 import com.ragent.common.exception.BusinessException;
@@ -14,20 +18,11 @@ import com.ragent.common.result.PageResult;
 import com.ragent.common.storage.MinioStorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.poi.xwpf.usermodel.IBodyElement;
-import org.apache.poi.xwpf.usermodel.XWPFDocument;
-import org.apache.poi.xwpf.usermodel.XWPFParagraph;
-import org.apache.poi.xwpf.usermodel.XWPFTable;
-import org.apache.poi.xwpf.usermodel.XWPFTableCell;
-import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.core.io.ByteArrayResource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -35,9 +30,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.stream.Collectors;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -72,16 +65,20 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     private final KbDocumentMapper kbDocumentMapper;
     private final DocumentChunkMapper documentChunkMapper;
+    private final KbChunkSettingsMapper chunkSettingsMapper;
     private final VectorStore vectorStore;
     private final ChunkingService chunkingService;
     private final MinioStorageService minioStorage;
-
-    /** 提取结果：text 为拼接文本；linePages 为 PDF 时每行→页码（1 基，行索引 0 基），非 PDF 为 null */
-    private record ExtractedText(String text, int[] linePages) {
-    }
+    private final DocumentTextExtractor textExtractor;
+    private final ChunkingProperties chunkingProps;
 
     @Override
     public KbDocument upload(MultipartFile file) {
+        return upload(file, null);
+    }
+
+    @Override
+    public KbDocument upload(MultipartFile file, ChunkParams params) {
         if (file == null || file.isEmpty()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "文件不能为空");
         }
@@ -113,6 +110,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         doc.setSize(bytes.length);
         doc.setStatus("PENDING");
         doc.setFileHash(sha256Hex(bytes)); // 内容哈希，供以后同名文件是否真改了内容的判断
+        applyChunkParams(doc, params); // 上传携带的切片参数覆盖（null 字段不动）
         kbDocumentMapper.insert(doc);
 
         // 先落 MinIO 再处理：即使后续向量化失败，原始文件也已保存，可直接重试而无需重新上传
@@ -145,18 +143,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         byte[] bytes = minioStorage.get(doc.getObjectKey());
 
         // 清理上次失败留下的切片和向量，避免重试后数据重复
-        List<DocumentChunk> oldChunks = documentChunkMapper.selectList(
-                new LambdaQueryWrapper<DocumentChunk>().eq(DocumentChunk::getDocumentId, id));
-        List<String> vectorIds = oldChunks.stream().map(DocumentChunk::getVectorId).toList();
-        if (!vectorIds.isEmpty()) {
-            try {
-                vectorStore.delete(vectorIds);
-            } catch (Exception e) {
-                log.warn("重试清理旧向量失败（忽略继续）: {}", e.getMessage());
-            }
-        }
-        documentChunkMapper.delete(new LambdaQueryWrapper<DocumentChunk>()
-                .eq(DocumentChunk::getDocumentId, id));
+        cleanupChunksAndVectors(id);
 
         doc.setStatus("PENDING");
         doc.setChunkCount(0);
@@ -165,16 +152,23 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         return process(doc, bytes);
     }
 
-    @Override
+    /** 便捷重载（无参数覆盖），接口只声明带 params 的版本 */
     public List<UploadResult> uploadBatch(List<MultipartFile> files) {
+        return uploadBatch(files, null);
+    }
+
+    @Override
+    public List<UploadResult> uploadBatch(List<MultipartFile> files, List<ChunkParams> params) {
         if (files == null || files.isEmpty()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择要上传的文件");
         }
         // 有界线程池并行处理多个文件：文件间多线程，文件内嵌入按 10 条/批串行调用，
         // 单个文件失败只在结果里标记，不影响其他文件入库。
         List<Future<UploadResult>> futures = new ArrayList<>(files.size());
-        for (MultipartFile file : files) {
-            futures.add(UPLOAD_EXECUTOR.submit(() -> safeUpload(file)));
+        for (int i = 0; i < files.size(); i++) {
+            MultipartFile file = files.get(i);
+            ChunkParams p = (params != null && i < params.size()) ? params.get(i) : null;
+            futures.add(UPLOAD_EXECUTOR.submit(() -> safeUpload(file, p)));
         }
         List<UploadResult> results = new ArrayList<>(futures.size());
         for (Future<UploadResult> future : futures) {
@@ -194,10 +188,10 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     }
 
     /** 单文件上传的异常隔离：任何失败都转成结果对象，不让线程池任务抛异常 */
-    private UploadResult safeUpload(MultipartFile file) {
+    private UploadResult safeUpload(MultipartFile file, ChunkParams params) {
         String filename = file.getOriginalFilename();
         try {
-            upload(file);
+            upload(file, params);
             return new UploadResult(filename, true, null);
         } catch (Exception e) {
             log.warn("批量上传单个文件失败: {} - {}", filename, e.getMessage());
@@ -284,7 +278,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
         byte[] bytes = minioStorage.get(doc.getObjectKey());
         try {
-            String text = extract(doc.getFilename(), bytes).text();
+            String text = textExtractor.extract(doc.getFilename(), bytes).text();
             int lineCount = text.isEmpty() ? 0 : text.split("\n", -1).length;
             return new SourceText(doc.getFilename(), doc.getContentType(), text, lineCount);
         } catch (IOException e) {
@@ -302,19 +296,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         if (doc.getObjectKey() != null && !doc.getObjectKey().isBlank()) {
             minioStorage.delete(doc.getObjectKey());
         }
-        List<DocumentChunk> chunks = documentChunkMapper.selectList(
-                new LambdaQueryWrapper<DocumentChunk>().eq(DocumentChunk::getDocumentId, id));
-        List<String> vectorIds = chunks.stream().map(DocumentChunk::getVectorId).toList();
-        if (!vectorIds.isEmpty()) {
-            try {
-                vectorStore.delete(vectorIds);
-            } catch (Exception e) {
-                // 向量不存在/集合不存在时删除本就是幂等操作，忽略继续
-                log.warn("删除 Qdrant 向量失败（忽略继续）: {}", e.getMessage());
-            }
-        }
-        documentChunkMapper.delete(new LambdaQueryWrapper<DocumentChunk>()
-                .eq(DocumentChunk::getDocumentId, id));
+        cleanupChunksAndVectors(id);
         kbDocumentMapper.deleteById(id);
     }
 
@@ -328,15 +310,86 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
     }
 
+    @Override
+    public KbDocument rechunk(Long id, ChunkParams params) {
+        KbDocument doc = kbDocumentMapper.selectById(id);
+        if (doc == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "文档不存在");
+        }
+        if (doc.getObjectKey() == null || doc.getObjectKey().isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "该文档未保存原始文件，无法重新切片");
+        }
+        byte[] bytes = minioStorage.get(doc.getObjectKey());
+        // 参数覆盖整体替换：null 字段 = 重置回全局默认
+        doc.setChunkMaxChars(params != null ? params.maxChunkChars() : null);
+        doc.setChunkOverlapChars(params != null ? params.overlapChars() : null);
+        doc.setChunkSemantic(params != null ? params.semantic() : null);
+        kbDocumentMapper.updateById(doc);
+
+        // 清旧切片/向量后按新参数重跑管线
+        cleanupChunksAndVectors(id);
+        doc.setStatus("PENDING");
+        doc.setChunkCount(0);
+        kbDocumentMapper.updateById(doc);
+        log.info("重新切片文档: {} (id={})", doc.getFilename(), id);
+        return process(doc, bytes);
+    }
+
+    /** 上传携带的切片参数覆盖写入文档列（仅非 null 字段） */
+    private void applyChunkParams(KbDocument doc, ChunkParams params) {
+        if (params == null) {
+            return;
+        }
+        doc.setChunkMaxChars(params.maxChunkChars());
+        doc.setChunkOverlapChars(params.overlapChars());
+        doc.setChunkSemantic(params.semantic());
+    }
+
+    /** 解析分片参数：每文档覆盖 > kb_chunk_settings 全局设置 > yml 默认 */
+    private ChunkingService.ChunkOptions resolveChunkOptions(KbDocument doc) {
+        KbChunkSettings s = chunkSettingsMapper.selectById(1);
+        int maxChars = firstNotNull(doc.getChunkMaxChars(),
+                s != null ? s.getMaxChunkChars() : null, chunkingProps.getMaxChunkChars());
+        int overlap = firstNotNull(doc.getChunkOverlapChars(),
+                s != null ? s.getOverlapChars() : null, chunkingProps.getOverlapChars());
+        boolean semantic = firstNotNull(doc.getChunkSemantic(),
+                s != null ? s.getSemanticEnabled() : null, chunkingProps.isSemanticEnabled());
+        return new ChunkingService.ChunkOptions(maxChars, overlap, semantic, doc.getFilename());
+    }
+
+    private static <T> T firstNotNull(T a, T b, T c) {
+        return a != null ? a : (b != null ? b : c);
+    }
+
+    /**
+     * 清空某文档的切片与向量（删除 / 重试前清理 / 失败补偿三处共用）。
+     * Qdrant 删除幂等（向量/集合不存在也成功），失败仅告警不阻断主流程。
+     */
+    private void cleanupChunksAndVectors(Long documentId) {
+        List<DocumentChunk> chunks = documentChunkMapper.selectList(
+                new LambdaQueryWrapper<DocumentChunk>().eq(DocumentChunk::getDocumentId, documentId));
+        List<String> vectorIds = chunks.stream().map(DocumentChunk::getVectorId).toList();
+        if (!vectorIds.isEmpty()) {
+            try {
+                vectorStore.delete(vectorIds);
+            } catch (Exception e) {
+                log.warn("清理 Qdrant 向量失败（忽略继续）: {}", e.getMessage());
+            }
+        }
+        documentChunkMapper.delete(new LambdaQueryWrapper<DocumentChunk>()
+                .eq(DocumentChunk::getDocumentId, documentId));
+    }
+
     private KbDocument process(KbDocument doc, byte[] bytes) {
         String filename = doc.getFilename();
         try {
-            ExtractedText extracted = extract(filename, bytes);
+            DocumentTextExtractor.ExtractedText extracted = textExtractor.extract(filename, bytes);
             if (extracted.text().isBlank()) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "未提取到文本内容");
             }
-            // 结构感知分片：按标题分节 + 段落组块 + 句子边界 + 重叠，并带出原文行号/字符范围
-            List<ChunkingService.Chunk> chunks = chunkingService.chunk(extracted.text());
+            // 结构感知分片：按标题分节 + 段落组块 + 句子边界 + 重叠 + 可选语义分片，并带出原文行号/字符范围。
+            // 参数按「每文档覆盖 > 全局设置 > yml 默认」解析（见 resolveChunkOptions）。
+            List<ChunkingService.Chunk> chunks = chunkingService.chunk(extracted.text(), resolveChunkOptions(doc));
 
             List<Document> toStore = new ArrayList<>();
             int idx = 0;
@@ -380,8 +433,14 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             }
             // DashScope 兼容嵌入接口单次最多 10 条文本（超过报 400 batch size invalid）。
             // 切片数往往远超 10，按上限分批向量化入 Qdrant，保证大文档正常入库。
+            // 高峰期嵌入接口偶发 429/5xx，复用 AiRetry 指数退避自动重试，避免整篇文档因单批失败作废；
+            // 重试耗尽仍失败则抛异常走下方 catch 的失败补偿清理。
             for (int i = 0; i < toStore.size(); i += MAX_EMBED_BATCH) {
-                vectorStore.add(toStore.subList(i, Math.min(i + MAX_EMBED_BATCH, toStore.size())));
+                List<Document> batch = toStore.subList(i, Math.min(i + MAX_EMBED_BATCH, toStore.size()));
+                AiRetry.callWithRetry(() -> {
+                    vectorStore.add(batch);
+                    return null;
+                });
             }
 
             doc.setChunkCount(toStore.size());
@@ -391,81 +450,17 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             return doc;
         } catch (Exception e) {
             log.error("知识库文档处理失败: {}", filename, e);
+            // 失败补偿清理：删掉本次失败前已写入的切片与已入 Qdrant 的向量，
+            // 避免 FAILED 文档的半成品仍被问答检索到（检索两端都不按 status 过滤）。
+            // 清理本身失败只告警，不掩盖原始错误。
+            try {
+                cleanupChunksAndVectors(doc.getId());
+            } catch (Exception cleanupEx) {
+                log.warn("失败补偿清理切片/向量失败: {}", cleanupEx.getMessage());
+            }
             doc.setStatus("FAILED");
             kbDocumentMapper.updateById(doc);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文档处理失败: " + friendlyError(e.getMessage()));
-        }
-    }
-
-    /**
-     * 提取文本。PDF 按页拼成一个整体文本，同时记录「每行属于第几页」（1 基）：
-     * 行索引 0 基、与 chunk 的 lineStart/lineEnd 对齐，方便把切片范围换算成页码。
-     */
-    private ExtractedText extract(String filename, byte[] bytes) throws IOException {
-        String lower = filename.toLowerCase(Locale.ROOT);
-        if (lower.endsWith(".docx")) {
-            return new ExtractedText(extractDocx(bytes), null);
-        }
-        if (lower.endsWith(".pdf")) {
-            PagePdfDocumentReader reader = new PagePdfDocumentReader(
-                    new ByteArrayResource(bytes, filename));
-            List<Document> pages = reader.get();
-            StringBuilder sb = new StringBuilder();
-            // linePages[i] = 第 i 行（i>=1）的页码；第 0 行恒为第 1 页
-            List<Integer> linePage = new ArrayList<>();
-            for (int p = 0; p < pages.size(); p++) {
-                String pageText = pages.get(p).getText();
-                if (p > 0) {
-                    sb.append('\n'); // 页间分隔换行，属于本页起始行
-                    linePage.add(p + 1);
-                }
-                sb.append(pageText);
-                int newlines = 0;
-                for (int i = 0; i < pageText.length(); i++) {
-                    if (pageText.charAt(i) == '\n') {
-                        newlines++;
-                    }
-                }
-                for (int i = 0; i < newlines; i++) {
-                    linePage.add(p + 1);
-                }
-            }
-            int[] linePages = new int[1 + linePage.size()];
-            linePages[0] = 1;
-            for (int i = 0; i < linePage.size(); i++) {
-                linePages[i + 1] = linePage.get(i);
-            }
-            return new ExtractedText(sb.toString(), linePages);
-        }
-        return new ExtractedText(new String(bytes, StandardCharsets.UTF_8), null);
-    }
-
-    /** 提取 Word .docx 文本：按文档顺序遍历段落与表格（表格单元格以制表符分隔）。仅支持新版 docx */
-    private String extractDocx(byte[] bytes) throws IOException {
-        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
-            StringBuilder sb = new StringBuilder();
-            for (IBodyElement element : document.getBodyElements()) {
-                if (element instanceof XWPFParagraph para) {
-                    String t = para.getText().trim();
-                    if (!t.isEmpty()) {
-                        sb.append(t).append('\n');
-                    }
-                } else if (element instanceof XWPFTable table) {
-                    for (XWPFTableRow row : table.getRows()) {
-                        String line = row.getTableCells().stream()
-                                .map(XWPFTableCell::getText)
-                                .map(String::trim)
-                                .collect(Collectors.joining("\t"));
-                        if (!line.isEmpty()) {
-                            sb.append(line).append('\n');
-                        }
-                    }
-                }
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST,
-                    "无法解析 Word 文档（请确认是 .docx 格式）: " + friendlyError(e.getMessage()));
         }
     }
 
