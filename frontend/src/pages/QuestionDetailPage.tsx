@@ -4,6 +4,7 @@ import { getQuestion, acceptAnswer } from '../api/question'
 import { createAnswer } from '../api/answer'
 import { useAuthStore } from '../store/auth'
 import Markdown from '../components/Markdown'
+import MarkdownEditor from '../components/MarkdownEditor'
 import { formatTime } from '../utils/format'
 import type { QuestionVO } from '../types'
 
@@ -137,12 +138,11 @@ export default function QuestionDetailPage() {
         {error && <div className="text-red-500 text-sm mb-3">{error}</div>}
         {user ? (
           <form onSubmit={handleSubmitAnswer} className="space-y-3">
-            <textarea
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[120px] focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="支持 Markdown 语法..."
+            <MarkdownEditor
               value={content}
-              onChange={(e) => setContent(e.target.value)}
-              required
+              onChange={setContent}
+              placeholder="支持 Markdown 语法..."
+              minHeight={120}
             />
             <button
               type="submit"

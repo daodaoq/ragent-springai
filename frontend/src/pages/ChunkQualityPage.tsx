@@ -88,6 +88,9 @@ export default function ChunkQualityPage() {
   /** 展开查看某条日志的召回来源 + 回答 */
   const [expandedLog, setExpandedLog] = useState<string | null>(null)
 
+  /** 页内 Tab：quality=切片质量 / eval=检索评测 / logs=查询日志（避免一页纵向过长） */
+  const [tab, setTab] = useState<'quality' | 'eval' | 'logs'>('quality')
+
   const histRef = useRef<HTMLDivElement>(null)
   useChart(histRef, report?.lengthBuckets, buildHistogramOption)
 
@@ -276,13 +279,48 @@ export default function ChunkQualityPage() {
     ]
   }, [report])
 
+  const tabs: { key: 'quality' | 'eval' | 'logs'; label: string; count?: number }[] = [
+    { key: 'quality', label: '📐 切片质量', count: report?.docs.length },
+    { key: 'eval', label: '🧪 检索评测', count: evalCompare.on?.cases.length ?? evalCompare.off?.cases.length },
+    { key: 'logs', label: '📊 查询日志', count: queryLogs?.total },
+  ]
+
   return (
     <div>
-      <h1 className="text-lg font-bold text-slate-800 mb-4">🔍 切片质量评估</h1>
+      <h1 className="text-lg font-bold text-slate-800 mb-3">🔍 切片质量评估</h1>
+
+      {/* 页内 Tab：避免 KPI/设置/文档/评测/日志纵向堆叠过高 */}
+      <div className="flex items-center gap-1 mb-4 border-b border-slate-200">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2 -mb-px border-b-2 text-sm font-medium transition-colors ${
+              tab === t.key
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+            }`}
+          >
+            {t.label}
+            {t.count != null && (
+              <span
+                className={`ml-1.5 text-xs rounded-full px-1.5 py-0.5 ${
+                  tab === t.key ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'
+                }`}
+              >
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
       {error && <div className="text-sm text-red-500 mb-3">⚠️ {error}</div>}
       {loading && <div className="text-sm text-slate-400 py-8">加载中…</div>}
       {!loading && report && (
         <>
+          {tab === 'quality' && (
+            <>
           {/* KPI 卡 */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
             {cards.map((c) => (
@@ -442,7 +480,11 @@ export default function ChunkQualityPage() {
               className="border-t border-slate-100"
             />
           </div>
+            </>
+          )}
 
+          {tab === 'eval' && (
+            <>
           {/* RAG 评测 */}
           <div className="bg-white border border-slate-200 rounded-xl p-4 mb-5">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
@@ -588,7 +630,11 @@ export default function ChunkQualityPage() {
               </div>
             )}
           </div>
+            </>
+          )}
 
+          {tab === 'logs' && (
+            <>
           {/* 真实查询日志（自动采集） */}
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-5">
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
@@ -706,6 +752,8 @@ export default function ChunkQualityPage() {
               />
             )}
           </div>
+            </>
+          )}
         </>
       )}
 

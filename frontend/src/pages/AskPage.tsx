@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { createQuestion } from '../api/question'
 import { useAuthStore } from '../store/auth'
+import MarkdownEditor from '../components/MarkdownEditor'
 
 export default function AskPage() {
   const { user } = useAuthStore()
@@ -16,6 +17,10 @@ export default function AskPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!content.trim()) {
+      setError('请填写问题详情')
+      return
+    }
     setError('')
     setLoading(true)
     try {
@@ -49,12 +54,11 @@ export default function AskPage() {
           required
           maxLength={200}
         />
-        <textarea
-          className={`${inputCls} min-h-[180px]`}
-          placeholder="问题详情，支持 Markdown 语法..."
+        <MarkdownEditor
           value={content}
-          onChange={(e) => setContent(e.target.value)}
-          required
+          onChange={setContent}
+          placeholder="问题详情，支持 Markdown 语法..."
+          minHeight={180}
         />
         <input
           className={inputCls}
