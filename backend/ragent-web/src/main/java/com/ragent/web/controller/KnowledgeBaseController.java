@@ -36,9 +36,24 @@ public class KnowledgeBaseController {
         return Result.success(kbService.upload(file));
     }
 
+    /** 批量上传：一次提交多个文件，后端线程池并行处理，逐文件返回结果 */
+    @PostMapping(value = "/documents/batch", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @SaCheckLogin
+    public Result<List<KnowledgeBaseService.UploadResult>> uploadBatch(
+            @RequestPart("files") List<MultipartFile> files) {
+        return Result.success(kbService.uploadBatch(files));
+    }
+
     @GetMapping("/documents")
     public Result<List<KbDocument>> list() {
         return Result.success(kbService.list());
+    }
+
+    /** 重试处理失败的文档：从 MinIO 读原始文件重新切分+向量化，无需重新上传 */
+    @PostMapping("/documents/{id}/retry")
+    @SaCheckLogin
+    public Result<KbDocument> retry(@PathVariable Long id) {
+        return Result.success(kbService.retry(id));
     }
 
     @DeleteMapping("/documents/{id}")

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS `kb_document` (
   `filename`     VARCHAR(255) NOT NULL COMMENT '文件名',
   `content_type` VARCHAR(50)  DEFAULT NULL COMMENT '文件类型',
   `size`         INT          NOT NULL DEFAULT 0 COMMENT '字节数',
+  `object_key`   VARCHAR(255) DEFAULT NULL COMMENT 'MinIO 原始文件 key（失败可据此重试）',
   `chunk_count`  INT          NOT NULL DEFAULT 0 COMMENT '切片数',
   `status`       VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING/READY/FAILED',
   `deleted`      TINYINT      NOT NULL DEFAULT 0,

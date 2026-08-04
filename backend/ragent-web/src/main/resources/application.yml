@@ -2,6 +2,10 @@ server:
   port: 8080
   servlet:
     context-path: /api
+  tomcat:
+    # Tomcat 10.1 新默认 multipart 部件数上限为 10（max-part-count=10），批量上传多个文件会直接 400。
+    # 放宽到 1000，配合上方的 multipart 请求体上限，支撑一次传几十个文档。
+    max-part-count: 1000
 
 spring:
   application:
@@ -50,8 +54,9 @@ spring:
       timeout: 3s
   servlet:
     multipart:
+      # 单文件上限与服务端 MAX_FILE_SIZE 一致；整批上限放宽，支持批量上传多文档（否则批量传几个大文件就触发请求体超限）
       max-file-size: 10MB
-      max-request-size: 10MB
+      max-request-size: 100MB
 
 mybatis-plus:
   configuration:

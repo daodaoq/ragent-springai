@@ -7,6 +7,8 @@ const TOKEN_KEY = 'token'
 interface AuthState {
   token: string | null
   user: UserInfo | null
+  /** 登录态是否已从服务端校验完成。false 时先渲染加载页，避免刷新后被瞬间踢到登录页 */
+  initialized: boolean
   /** 应用启动时恢复登录态 */
   init: () => Promise<void>
   login: (username: string, password: string) => Promise<void>
@@ -19,17 +21,22 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set) => ({
   token: localStorage.getItem(TOKEN_KEY),
   user: null,
+  initialized: false,
 
   init: async () => {
     const token = localStorage.getItem(TOKEN_KEY)
-    if (!token) return
+    if (!token) {
+      // 没有 token 无需校验，直接完成初始化
+      set({ token: null, user: null, initialized: true })
+      return
+    }
     try {
       const res = await fetchMe()
-      set({ user: res.data, token })
+      set({ user: res.data, token, initialized: true })
     } catch {
       // token 失效则清除
       localStorage.removeItem(TOKEN_KEY)
-      set({ token: null, user: null })
+      set({ token: null, user: null, initialized: true })
     }
   },
 

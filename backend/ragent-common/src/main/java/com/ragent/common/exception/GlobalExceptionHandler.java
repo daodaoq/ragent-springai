@@ -7,6 +7,9 @@ import org.springframework.validation.BindException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.stream.Collectors;
@@ -46,6 +49,26 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoResourceFoundException.class)
     public Result<Void> handleNoResource(NoResourceFoundException e) {
         return Result.error(ErrorCode.NOT_FOUND);
+    }
+
+    /** 上传超限：Spring 在进入 Controller 前就拒绝，必须显式捕获，否则会被兜底 handler 吞成「系统繁忙」 */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public Result<Void> handleMaxUploadSize(MaxUploadSizeExceededException e) {
+        log.warn("上传文件超限: {}", e.getMessage());
+        return Result.error(ErrorCode.BAD_REQUEST, "上传文件过大：单个文件不超过 10MB，整批不超过 100MB");
+    }
+
+    /** 缺少 multipart part（如未选择文件/参数名不匹配） */
+    @ExceptionHandler(MissingServletRequestPartException.class)
+    public Result<Void> handleMissingPart(MissingServletRequestPartException e) {
+        return Result.error(ErrorCode.BAD_REQUEST, "缺少上传文件");
+    }
+
+    @ExceptionHandler(MultipartException.class)
+    public Result<Void> handleMultipart(MultipartException e) {
+        // 打完整堆栈（含嵌套 cause），便于定位是哪种 multipart 限制
+        log.warn("上传请求解析失败", e);
+        return Result.error(ErrorCode.BAD_REQUEST, "上传请求无效，请重新选择文件");
     }
 
     @ExceptionHandler(Exception.class)

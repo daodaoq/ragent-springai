@@ -1,4 +1,4 @@
-package com.ragent.web.config;
+package com.ragent.common.storage;
 
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * MinIO 对象存储配置。
+ * MinIO 对象存储配置（通用存储能力，位于 common 供各模块复用）。
  * <p>
  * 初始化 MinioClient bean，并在应用启动时确保 bucket 存在；
  * 配置项从 application.yml 的 minio 前缀读取。

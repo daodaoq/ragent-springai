@@ -26,6 +26,9 @@ public class KbDocument {
 
     private Integer size;
 
+    /** MinIO 原始文件 object key（上传时先落 MinIO，失败可据此重试，无需重新上传） */
+    private String objectKey;
+
     private Integer chunkCount;
 
     /** PENDING / READY / FAILED */

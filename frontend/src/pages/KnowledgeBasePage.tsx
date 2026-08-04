@@ -4,9 +4,11 @@ import {
   deleteDocument,
   listChunks,
   listDocuments,
-  uploadDocument,
+  retryDocument,
+  uploadDocuments,
   type DocumentChunk,
   type KbDocument,
+  type UploadResult,
 } from '../api/kb'
 import { useAuthStore } from '../store/auth'
 import { formatTime } from '../utils/format'
@@ -15,7 +17,11 @@ export default function KnowledgeBasePage() {
   const { user } = useAuthStore()
   const [docs, setDocs] = useState<KbDocument[]>([])
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState('')
+  // 上传失败详情（可展开查看全部失败原因）
+  const [uploadErrors, setUploadErrors] = useState<{ filename: string; message: string }[]>([])
+  const [showUploadErrors, setShowUploadErrors] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   // 切片查看模态框
   const [chunkDoc, setChunkDoc] = useState<KbDocument | null>(null)
@@ -41,18 +47,37 @@ export default function KnowledgeBasePage() {
   if (!user) return <Navigate to="/login" replace />
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    const list = Array.from(files)
     setUploading(true)
+    setUploadProgress({ done: 0, total: list.length })
     setError('')
+    setUploadErrors([])
+    setShowUploadErrors(false)
     try {
-      await uploadDocument(file)
-      e.target.value = ''
-      await load()
+      // 分批发送（每批 5 个），每批由后端并行处理；分批是为了实时展示进度，避免传几十个文件时页面像卡死
+      const BATCH_SIZE = 5
+      const allResults: UploadResult[] = []
+      for (let i = 0; i < list.length; i += BATCH_SIZE) {
+        const batch = list.slice(i, i + BATCH_SIZE)
+        const res = await uploadDocuments(batch)
+        allResults.push(...res.data)
+        setUploadProgress({ done: Math.min(i + batch.length, list.length), total: list.length })
+      }
+      const failed = allResults.filter((r) => !r.success)
+      if (failed.length > 0) {
+        // 摘要只显示成败数量，完整失败原因存起来供「查看详情」展开
+        setUploadErrors(failed.map((r) => ({ filename: r.filename, message: r.message ?? '未知错误' })))
+        setError(`成功 ${allResults.length - failed.length}/${allResults.length} 个，失败 ${failed.length} 个`)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '上传失败')
     } finally {
+      e.target.value = ''
+      await load()
       setUploading(false)
+      setUploadProgress(null)
     }
   }
 
@@ -63,6 +88,16 @@ export default function KnowledgeBasePage() {
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败')
+    }
+  }
+
+  const handleRetry = async (d: KbDocument) => {
+    if (!window.confirm(`重新处理「${d.filename}」？（从已保存的原始文件重新切分+向量化，无需重新上传）`)) return
+    try {
+      await retryDocument(d.id)
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重试失败')
     }
   }
 
@@ -94,7 +129,19 @@ export default function KnowledgeBasePage() {
           <p className="text-sm text-slate-500 mt-0.5">上传文档构建实验室知识库，供 AI 检索问答使用（支持 .md / .txt / .pdf）</p>
         </div>
         <div className="flex items-center gap-3">
-          {uploading && <span className="text-sm text-slate-400">处理中（切分+向量化）...</span>}
+          {uploading && uploadProgress && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-400">
+                正在处理文档 {uploadProgress.done}/{uploadProgress.total}（切分+向量化）
+              </span>
+              <div className="w-32 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                  style={{ width: `${(uploadProgress.done / uploadProgress.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
           <button
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
@@ -102,11 +149,35 @@ export default function KnowledgeBasePage() {
           >
             上传文档
           </button>
-          <input ref={fileRef} type="file" accept=".md,.txt,.pdf" className="hidden" onChange={handleUpload} />
+          <input ref={fileRef} type="file" accept=".md,.txt,.pdf" multiple className="hidden" onChange={handleUpload} />
         </div>
       </div>
 
-      {error && <div className="text-red-500 text-sm">{error}</div>}
+      {error && (
+        <div className="text-red-500 text-sm">
+          <div className="flex items-center gap-2">
+            <span>⚠️ {error}</span>
+            {uploadErrors.length > 0 && (
+              <button
+                onClick={() => setShowUploadErrors(!showUploadErrors)}
+                className="text-blue-500 hover:text-blue-600 underline text-xs shrink-0"
+              >
+                {showUploadErrors ? '收起详情' : `查看详情（${uploadErrors.length} 个）`}
+              </button>
+            )}
+          </div>
+          {showUploadErrors && uploadErrors.length > 0 && (
+            <div className="mt-2 max-h-64 overflow-y-auto bg-red-50 border border-red-100 rounded-lg p-3 text-xs space-y-1">
+              {uploadErrors.map((f, i) => (
+                <div key={i} className="break-all">
+                  <span className="text-red-600 font-medium">{f.filename}</span>
+                  <span className="text-red-400">：{f.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {docs.length === 0 ? (
@@ -132,8 +203,10 @@ export default function KnowledgeBasePage() {
                   <td className="px-4 py-3">
                     {d.status === 'READY' ? (
                       <span className="px-2 py-0.5 rounded-full text-xs bg-green-50 text-green-600">可用</span>
+                    ) : d.status === 'FAILED' ? (
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-500">处理失败</span>
                     ) : (
-                      <span className="px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-500">{d.status}</span>
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-yellow-50 text-yellow-600">{d.status}</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-slate-400">{formatTime(d.createdAt)}</td>
@@ -141,6 +214,11 @@ export default function KnowledgeBasePage() {
                     <button onClick={() => openChunks(d)} className="text-blue-500 hover:text-blue-600 mr-3">
                       查看切片
                     </button>
+                    {d.status !== 'READY' && (
+                      <button onClick={() => handleRetry(d)} className="text-amber-500 hover:text-amber-600 mr-3">
+                        重试
+                      </button>
+                    )}
                     <button onClick={() => handleDelete(d.id)} className="text-red-400 hover:text-red-600">
                       删除
                     </button>
