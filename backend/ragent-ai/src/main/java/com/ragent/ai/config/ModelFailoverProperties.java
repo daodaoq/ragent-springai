@@ -29,4 +29,7 @@ public class ModelFailoverProperties {
 
     /** 流式首包超时（毫秒）：N 毫秒未见首个 token 判失败，切下一个候选 */
     private long firstTokenTimeoutMs = 8_000;
+
+    /** P8-4b：同步 .call() 超时（毫秒）：意图改写/Agent 工具循环/摘要压缩/评测裁判的阻塞调用上限，防模型挂死占线程 */
+    private long syncTimeoutMs = 30_000;
 }

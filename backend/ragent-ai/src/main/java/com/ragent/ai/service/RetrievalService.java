@@ -17,16 +17,18 @@ public interface RetrievalService {
 
     /**
      * 检索规格：rerankQuery 用于重排；denseQueries/keywordQueries 为各自通道的查询列表（每路一条 ranked list）；
-     * filter 为实体过滤。单查询等价于 {@link #single(String)}。
+     * filter 为实体过滤；includeEval=true 时允许召回评测注入文档（仅评测程序用，生产路径恒为 false）。
+     * 单查询等价于 {@link #single(String)}。
      */
     record RetrievalQuery(String rerankQuery,
                           List<String> denseQueries,
                           List<String> keywordQueries,
-                          EntityHint filter) {
+                          EntityHint filter,
+                          boolean includeEval) {
 
-        /** 单查询、无过滤（等价于改造前的行为） */
+        /** 单查询、无过滤、不含评测文档（等价于改造前的行为） */
         public static RetrievalQuery single(String q) {
-            return new RetrievalQuery(q, List.of(q), List.of(q), null);
+            return new RetrievalQuery(q, List.of(q), List.of(q), null, false);
         }
     }
 
@@ -35,4 +37,7 @@ public interface RetrievalService {
 
     /** 多路检索 + 实体过滤入口（P6 管线使用） */
     List<Document> retrieve(RetrievalQuery rq, int topK);
+
+    /** P8-7a：清空检索缓存（文档增删改/重切后调用，避免返回过期切片） */
+    void invalidateCache();
 }

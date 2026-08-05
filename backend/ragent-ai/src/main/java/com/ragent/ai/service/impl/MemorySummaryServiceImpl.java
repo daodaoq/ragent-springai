@@ -7,6 +7,7 @@ import com.ragent.ai.mapper.AiConversationSummaryMapper;
 import com.ragent.ai.service.AiRetry;
 import com.ragent.ai.service.ChatMemoryService;
 import com.ragent.ai.service.MemorySummaryService;
+import com.ragent.common.context.RagentContext;
 import com.ragent.common.context.RagentThreadPools;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -59,7 +60,8 @@ public class MemorySummaryServiceImpl implements MemorySummaryService {
         if (!props.isSummaryEnabled() || evicted == null || evicted.isEmpty()) {
             return;
         }
-        String convId = conversationId == null || conversationId.isBlank() ? DEFAULT_CONVERSATION : conversationId;
+        // P8-3c：作用域在提交时即确定（TTL 上下文随任务透传，worker 内 userScope 同样可用）
+        String convId = scopedConvId(conversationId);
         try {
             summaryExecutor.submit(() -> {
                 try {
@@ -136,7 +138,7 @@ public class MemorySummaryServiceImpl implements MemorySummaryService {
 
     @Override
     public String getSummary(String conversationId) {
-        String convId = conversationId == null || conversationId.isBlank() ? DEFAULT_CONVERSATION : conversationId;
+        String convId = scopedConvId(conversationId);
         try {
             String s = redis.opsForValue().get(summaryKey(convId));
             if (s != null && !s.isBlank()) {
@@ -155,7 +157,7 @@ public class MemorySummaryServiceImpl implements MemorySummaryService {
 
     @Override
     public void clear(String conversationId) {
-        String convId = conversationId == null || conversationId.isBlank() ? DEFAULT_CONVERSATION : conversationId;
+        String convId = scopedConvId(conversationId);
         try {
             redis.delete(summaryKey(convId));
         } catch (Exception ignore) {
@@ -169,5 +171,11 @@ public class MemorySummaryServiceImpl implements MemorySummaryService {
 
     private static String summaryKey(String convId) {
         return SUMMARY_KEY_PREFIX + convId;
+    }
+
+    /** P8-3c：会话摘要同样按用户作用域隔离，避免不同用户复用同一 conversationId 时摘要串扰。 */
+    private static String scopedConvId(String conversationId) {
+        String id = conversationId == null || conversationId.isBlank() ? DEFAULT_CONVERSATION : conversationId;
+        return RagentContext.userScope() + ":" + id;
     }
 }

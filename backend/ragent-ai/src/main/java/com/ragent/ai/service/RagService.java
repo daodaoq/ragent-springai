@@ -18,6 +18,9 @@ public interface RagService {
     /** 检索：processed=true 走查询处理管线（改写/多查询/HyDE/实体），false 原样（评测 A/B 基线） */
     List<Document> retrieve(String question, int topK, boolean processed);
 
+    /** P8-6c：评测专用检索——includeEval=true 时允许召回评测注入的 EVAL 样例文档（生产路径恒为 false） */
+    List<Document> retrieve(String question, int topK, boolean processed, boolean includeEval);
+
     /** 拼装带引用上下文的 Prompt */
     String buildPrompt(String question, List<Document> docs);
 

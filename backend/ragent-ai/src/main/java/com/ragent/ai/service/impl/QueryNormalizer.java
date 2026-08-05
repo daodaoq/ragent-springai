@@ -7,8 +7,11 @@ import java.util.regex.Pattern;
  */
 public final class QueryNormalizer {
 
-    /** 开头口头禅：请/帮我/请问/你好… */
-    private static final Pattern LEADING_FILLER = Pattern.compile("^(?:请|帮我|麻烦|请问|你好|您好|帮忙|求)+");
+    /** 开头口头禅：请/帮我/请问/你好…（多字词在前，避免交替组只剥掉单字"请"） */
+    private static final Pattern LEADING_FILLER = Pattern.compile(
+            "^(?:请问|帮忙|麻烦|帮我|您好|你好|请|求)+");
+    /** 开头口头禅后可能紧跟的标点（"您好，xxx" 的逗号一并去掉） */
+    private static final Pattern LEADING_PUNCT = Pattern.compile("^[,，:：;；、]+");
     /** 结尾口头禅：谢谢/感谢/一下/看看… */
     private static final Pattern TRAILING_FILLER = Pattern.compile("(?:谢谢|感谢|多谢|辛苦了|一下|看看|呗|哦)+$");
 
@@ -21,6 +24,7 @@ public final class QueryNormalizer {
         }
         String s = raw.trim();
         s = LEADING_FILLER.matcher(s).replaceFirst("");
+        s = LEADING_PUNCT.matcher(s).replaceFirst("");
         s = TRAILING_FILLER.matcher(s).replaceFirst("");
         s = fullToHalf(s);
         s = s.replaceAll("[\\s\\u00A0]+", " ").trim();

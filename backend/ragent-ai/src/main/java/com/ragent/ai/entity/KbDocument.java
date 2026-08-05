@@ -46,6 +46,9 @@ public class KbDocument {
     /** PENDING / READY / FAILED */
     private String status;
 
+    /** P8-6c：文档来源——UPLOAD(用户上传)/EVAL(评测注入)；生产检索只召回 UPLOAD，避免评测样例污染真实 KB */
+    private String source;
+
     @TableLogic
     private Integer deleted;
 

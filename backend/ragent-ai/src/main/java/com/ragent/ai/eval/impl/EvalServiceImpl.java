@@ -3,8 +3,10 @@ package com.ragent.ai.eval.impl;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ragent.ai.entity.EvalResult;
 import com.ragent.ai.entity.KbDocument;
 import com.ragent.ai.eval.EvalService;
+import com.ragent.ai.mapper.EvalResultMapper;
 import com.ragent.ai.service.KnowledgeBaseService;
 import com.ragent.ai.service.RagService;
 import com.ragent.common.exception.BusinessException;
@@ -13,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
@@ -49,6 +52,7 @@ public class EvalServiceImpl implements EvalService {
     private final ObjectProvider<ChatClient> chatClientProvider;
     private final ObjectMapper objectMapper;
     private final ResourceLoader resourceLoader;
+    private final EvalResultMapper evalResultMapper;
 
     @Override
     public EvalReport run(boolean processed) {
@@ -63,7 +67,47 @@ public class EvalServiceImpl implements EvalService {
         for (EvalCase c : cases) {
             results.add(runCase(c, docIdByFile, processed, withAnswer));
         }
-        return aggregate(results);
+        EvalReport report = aggregate(results);
+        // P8-6b：持久化本次结果，供历史对比/回归追踪
+        persist(report, processed, withAnswer);
+        return report;
+    }
+
+    // ==================== P8-6b 持久化 ====================
+
+    private void persist(EvalReport report, boolean processed, boolean withAnswer) {
+        try {
+            EvalResult e = new EvalResult();
+            e.setProcessed(processed);
+            e.setWithAnswer(withAnswer);
+            e.setTotalCases(report.totalCases());
+            e.setRecall(report.retrieval().recallAt5());
+            e.setPrecision(report.retrieval().precisionAt5());
+            e.setMrr(report.retrieval().mrrAt5());
+            e.setNdcg(report.retrieval().ndcgAt5());
+            e.setAvgFaithfulness(report.answer().avgFaithfulness());
+            e.setAvgRelevance(report.answer().avgRelevance());
+            e.setCitationRate(report.answer().citationRate());
+            e.setDetailJson(objectMapper.writeValueAsString(report));
+            evalResultMapper.insert(e);
+            log.info("评测结果已持久化: id={}, recall={}, ndcg={}, 忠实度={}",
+                    e.getId(), report.retrieval().recallAt5(), report.retrieval().ndcgAt5(),
+                    report.answer().avgFaithfulness());
+        } catch (Exception e) {
+            log.warn("评测结果持久化失败（不影响本次返回）: {}", e.getMessage());
+        }
+    }
+
+    @Override
+    public List<EvalResult> history(int limit) {
+        return evalResultMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<EvalResult>()
+                        .select(EvalResult::getId, EvalResult::getProcessed, EvalResult::getWithAnswer,
+                                EvalResult::getTotalCases, EvalResult::getRecall, EvalResult::getPrecision,
+                                EvalResult::getMrr, EvalResult::getNdcg, EvalResult::getAvgFaithfulness,
+                                EvalResult::getAvgRelevance, EvalResult::getCitationRate, EvalResult::getCreatedAt)
+                        .orderByDesc(EvalResult::getCreatedAt)
+                        .last("LIMIT " + Math.min(Math.max(limit, 1), 100)));
     }
 
     // ==================== 步骤 ====================
@@ -75,6 +119,8 @@ public class EvalServiceImpl implements EvalService {
                 Resource res = resourceLoader.getResource("classpath:eval/docs/" + filename);
                 String text = new String(res.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
                 KbDocument doc = kbService.uploadTextIfAbsent(filename, text);
+                // P8-6c：标记为 EVAL 评测文档——生产检索（includeEval=false）会排除，不再污染真实知识库
+                kbService.markSource(doc.getId(), "EVAL");
                 map.put(filename, doc.getId());
             } catch (Exception e) {
                 log.error("评测种子文档失败: {}", filename, e);
@@ -100,8 +146,8 @@ public class EvalServiceImpl implements EvalService {
                 .filter(Objects::nonNull)
                 .toList();
 
-        // 1. 检索（processed 走查询处理管线，gateByIntent=false）
-        List<Document> retrieved = ragService.retrieve(c.question(), TOP_K, processed);
+        // 1. 检索（processed 走查询处理管线，gateByIntent=false；includeEval=true 允许召回 EVAL 评测文档）
+        List<Document> retrieved = ragService.retrieve(c.question(), TOP_K, processed, true);
         // 2. 文档级相关性：同一期望文档的多个切片只算第一个命中（否则 recall 会因切片数而 >1，指标失真）
         Set<Long> seenRelevant = new HashSet<>();
         List<Boolean> relevant = new ArrayList<>();
@@ -216,26 +262,53 @@ public class EvalServiceImpl implements EvalService {
                 2. relevance 相关度：回答是否准确、完整地回答了问题
                 只输出 JSON 对象：{"faithfulness":X,"relevance":Y}
                 """.formatted(question, context, answer);
-        String raw = chatClient.prompt().user(prompt).call().content();
-        return parseJudge(raw);
+        // P8-6c：裁判独立于生产生成参数——强制低温度（0.1）降低打分随机性；
+        // 解析失败最多重试 1 次（第二次追加更严格的"只输出纯 JSON"约束），避免静默记 0 掩盖低分。
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                String raw = chatClient.prompt()
+                        .options(OpenAiChatOptions.builder().temperature(0.1).build())
+                        .user(prompt)
+                        .call()
+                        .content();
+                JudgeScores s = parseJudge(raw);
+                if (s != null) {
+                    return s;
+                }
+            } catch (Exception e) {
+                log.warn("裁判调用失败(第{}次): {}", attempt, e.getMessage());
+            }
+            prompt += "\n注意：必须输出形如 {\"faithfulness\":5,\"relevance\":4} 的纯 JSON，不要输出任何其他文字。";
+        }
+        return new JudgeScores(0, 0);
     }
 
+    /** 解析裁判 JSON；失败/缺字段/越界返回 null（由调用方决定重试），不再静默当 0 分。 */
     private JudgeScores parseJudge(String raw) {
         if (raw == null) {
-            return new JudgeScores(0, 0);
+            return null;
         }
         try {
             int start = raw.indexOf('{');
             int end = raw.lastIndexOf('}');
             if (start < 0 || end <= start) {
-                return new JudgeScores(0, 0);
+                return null;
             }
             JsonNode node = objectMapper.readTree(raw.substring(start, end + 1));
-            return new JudgeScores(node.path("faithfulness").asInt(0), node.path("relevance").asInt(0));
+            int faith = clampScore(node.path("faithfulness").asInt(-1));
+            int rel = clampScore(node.path("relevance").asInt(-1));
+            if (faith < 1 || rel < 1) {
+                return null;
+            }
+            return new JudgeScores(faith, rel);
         } catch (Exception e) {
             log.warn("裁判输出解析失败: {}", raw);
-            return new JudgeScores(0, 0);
+            return null;
         }
+    }
+
+    private static int clampScore(int v) {
+        return (v >= 1 && v <= 5) ? v : -1;
     }
 
     private String buildJudgeContext(List<Document> retrieved) {

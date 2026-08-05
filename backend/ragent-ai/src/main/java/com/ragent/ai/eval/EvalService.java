@@ -1,5 +1,7 @@
 package com.ragent.ai.eval;
 
+import com.ragent.ai.entity.EvalResult;
+
 import java.util.List;
 
 /**
@@ -23,6 +25,9 @@ public interface EvalService {
      * @param withAnswer true=含回答生成 + LLM 裁判打分（慢，10 用例可能数分钟）；false=仅检索指标（几十秒，A/B 快速对比用）
      */
     EvalReport run(boolean processed, boolean withAnswer);
+
+    /** P8-6b：最近 N 次评测历史（时间倒序，供趋势/回归对比；不含 detail_json 大字段） */
+    List<EvalResult> history(int limit);
 
     // ==================== 数据结构 ====================
 

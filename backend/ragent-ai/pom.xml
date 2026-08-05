@@ -74,5 +74,18 @@
             <artifactId>lombok</artifactId>
             <optional>true</optional>
         </dependency>
+
+        <!-- P8-8a：单元测试（纯逻辑测试，不启动 Spring 上下文） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- P8-8b：Micrometer 指标核心（MeterRegistry 为 optional，无 actuator 时不计数） -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+        </dependency>
     </dependencies>
 </project>

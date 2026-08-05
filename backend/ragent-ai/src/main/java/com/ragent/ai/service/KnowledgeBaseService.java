@@ -38,6 +38,9 @@ public interface KnowledgeBaseService {
     /** 供评测程序注入文本文档（幂等：同名已存在则跳过） */
     KbDocument uploadTextIfAbsent(String filename, String text);
 
+    /** P8-6c：标记文档来源（UPLOAD/EVAL）。评测注入后调用，生产检索据此排除 EVAL 样例 */
+    void markSource(Long id, String source);
+
     List<KbDocument> list();
 
     /** 文档切片分页查看（按 chunk_index 升序） */

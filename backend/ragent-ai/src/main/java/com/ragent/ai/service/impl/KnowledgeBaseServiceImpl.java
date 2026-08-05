@@ -12,6 +12,7 @@ import com.ragent.ai.mapper.KbDocumentMapper;
 import com.ragent.ai.service.AiRetry;
 import com.ragent.ai.service.ChunkingService;
 import com.ragent.ai.service.KnowledgeBaseService;
+import com.ragent.ai.service.RetrievalService;
 import com.ragent.common.exception.BusinessException;
 import com.ragent.common.exception.ErrorCode;
 import com.ragent.common.result.PageResult;
@@ -30,7 +31,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import com.ragent.common.context.RagentThreadPools;
 
 import java.util.concurrent.ExecutionException;
@@ -48,6 +51,11 @@ import java.util.regex.Pattern;
 public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     private static final long MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+    /** P8-8c：知识库上传允许的扩展名白名单（DocumentTextExtractor 实际能解析的格式） */
+    private static final Set<String> ALLOWED_KB_EXTENSIONS = Set.of(
+            "md", "markdown", "txt", "html", "htm",
+            "pdf", "doc", "docx", "rtf", "xlsx", "pptx");
 
     /**
      * DashScope 兼容模式的嵌入接口单次最多接收 10 条文本（超过报 400 batch size is invalid）。
@@ -73,6 +81,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     private final MinioStorageService minioStorage;
     private final DocumentTextExtractor textExtractor;
     private final ChunkingProperties chunkingProps;
+    private final RetrievalService retrievalService;
 
     @Override
     public KbDocument upload(MultipartFile file) {
@@ -91,12 +100,12 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         if (filename == null || filename.isBlank()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "文件名不能为空");
         }
-        // 同名处理：直接覆盖重传（视为更新该文档）。先删旧文档（含切片/向量/MinIO 原始文件），
-        // 避免重传同名文件时报「已存在」，也顺带清掉上次失败/PENDING 的残留。
-        KbDocument exist = kbDocumentMapper.selectOne(
-                new LambdaQueryWrapper<KbDocument>().eq(KbDocument::getFilename, filename));
-        if (exist != null) {
-            delete(exist.getId());
+        // P8-8c：扩展名白名单，拒绝任意文件落库（防上传可执行文件/超大非文本等）
+        String ext = filename.contains(".")
+                ? filename.substring(filename.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT) : "";
+        if (!ALLOWED_KB_EXTENSIONS.contains(ext)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST,
+                    "不支持的文件类型（." + ext + "），支持: " + String.join("/", ALLOWED_KB_EXTENSIONS));
         }
 
         byte[] bytes;
@@ -106,12 +115,22 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "读取文件失败");
         }
 
+        String newHash = sha256Hex(bytes);
+        KbDocument exist = kbDocumentMapper.selectOne(
+                new LambdaQueryWrapper<KbDocument>().eq(KbDocument::getFilename, filename));
+        // P8-5b：内容级幂等——同名同内容且已 READY 直接返回，跳过重复切分/向量化
+        // （fileHash 此前只算不用，这里让它真正参与变更检测）
+        if (exist != null && "READY".equals(exist.getStatus()) && newHash.equals(exist.getFileHash())) {
+            log.info("同名同内容文档已存在，跳过重复处理: {} (id={})", filename, exist.getId());
+            return exist;
+        }
+
         KbDocument doc = new KbDocument();
         doc.setFilename(filename);
         doc.setContentType(file.getContentType());
         doc.setSize(bytes.length);
         doc.setStatus("PENDING");
-        doc.setFileHash(sha256Hex(bytes)); // 内容哈希，供以后同名文件是否真改了内容的判断
+        doc.setFileHash(newHash); // 内容哈希：同名文件判断是否真改内容、变更检测
         applyChunkParams(doc, params); // 上传携带的切片参数覆盖（null 字段不动）
         kbDocumentMapper.insert(doc);
 
@@ -127,7 +146,14 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         doc.setObjectKey(objectKey);
         kbDocumentMapper.updateById(doc);
 
-        return process(doc, bytes);
+        // P8-5b：两阶段替换——新文档处理成功后才删旧文档。
+        // 之前是"先删旧文档再处理新文档"，新文档处理失败时旧文档已丢（覆盖即丢数据）。
+        // 现在处理期间旧文档保持 READY 可检索，新文档 READY 后再删除旧文档，失败则旧文档原样保留。
+        KbDocument result = process(doc, bytes);
+        if (exist != null) {
+            delete(exist.getId());
+        }
+        return result;
     }
 
     @Override
@@ -252,8 +278,23 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     }
 
     @Override
+    public void markSource(Long id, String source) {
+        KbDocument doc = kbDocumentMapper.selectById(id);
+        if (doc == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "文档不存在");
+        }
+        if (source == null || source.isBlank()) {
+            return;
+        }
+        doc.setSource(source);
+        kbDocumentMapper.updateById(doc);
+    }
+
+    @Override
     public List<KbDocument> list() {
+        // P8-6c：知识库列表只展示用户上传文档（UPLOAD），评测注入的 EVAL 样例不污染管理界面
         return kbDocumentMapper.selectList(new LambdaQueryWrapper<KbDocument>()
+                .eq(KbDocument::getSource, "UPLOAD")
                 .orderByDesc(KbDocument::getCreatedAt));
     }
 
@@ -300,6 +341,8 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
         cleanupChunksAndVectors(id);
         kbDocumentMapper.deleteById(id);
+        // P8-7a：知识库内容变化，失效检索缓存
+        retrievalService.invalidateCache();
     }
 
     @Override
@@ -365,18 +408,16 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     /**
      * 清空某文档的切片与向量（删除 / 重试前清理 / 失败补偿三处共用）。
-     * Qdrant 删除幂等（向量/集合不存在也成功），失败仅告警不阻断主流程。
+     * P8-2b：Qdrant 删除失败不再静默忽略——失败说明向量未清掉（孤儿向量仍会被稠密检索命中），
+     * 直接抛出让调用方可感知、可重试；失败补偿路径（process catch）外层已有 try/catch 兜底。
+     * Qdrant 删除本身幂等（向量/集合不存在也成功）。
      */
     private void cleanupChunksAndVectors(Long documentId) {
         List<DocumentChunk> chunks = documentChunkMapper.selectList(
                 new LambdaQueryWrapper<DocumentChunk>().eq(DocumentChunk::getDocumentId, documentId));
         List<String> vectorIds = chunks.stream().map(DocumentChunk::getVectorId).toList();
         if (!vectorIds.isEmpty()) {
-            try {
-                vectorStore.delete(vectorIds);
-            } catch (Exception e) {
-                log.warn("清理 Qdrant 向量失败（忽略继续）: {}", e.getMessage());
-            }
+            vectorStore.delete(vectorIds);
         }
         documentChunkMapper.delete(new LambdaQueryWrapper<DocumentChunk>()
                 .eq(DocumentChunk::getDocumentId, documentId));
@@ -448,6 +489,8 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             doc.setChunkCount(toStore.size());
             doc.setStatus("READY");
             kbDocumentMapper.updateById(doc);
+            // P8-7a：知识库内容变化，失效检索缓存，避免命中过期切片
+            retrievalService.invalidateCache();
             log.info("知识库文档已入库: {} ({} 切片)", filename, toStore.size());
             return doc;
         } catch (Exception e) {

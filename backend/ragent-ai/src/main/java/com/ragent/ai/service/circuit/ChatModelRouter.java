@@ -1,5 +1,6 @@
 package com.ragent.ai.service.circuit;
 
+import com.ragent.common.context.RagentThreadPools;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -9,6 +10,10 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -27,12 +32,22 @@ public class ChatModelRouter implements ChatModel {
 
     private final List<ModelEndpoint> endpoints;
     private final long firstTokenTimeoutMs;
+    private final long syncTimeoutMs;
     /** 当前生效模型名（降级链最新一次成功使用的端点），供状态观测 */
     private final AtomicReference<String> currentModel = new AtomicReference<>("primary");
 
-    public ChatModelRouter(List<ModelEndpoint> endpoints, long firstTokenTimeoutMs) {
+    /**
+     * P8-4b：同步 .call() 的兜底执行池。用有界池 + Future.get(timeout) 给阻塞调用加超时，
+     * 模型挂死时不再无限占线程；池满（AbortPolicy）直接抛错进入候选降级，也不阻塞调用方。
+     * TTL 透传保证调用方上下文（traceId/userId）带到模型调用线程。
+     */
+    private static final ExecutorService CALL_EXECUTOR = RagentThreadPools.newExecutor("model-sync-call",
+            4, 8, 100, new ThreadPoolExecutor.AbortPolicy());
+
+    public ChatModelRouter(List<ModelEndpoint> endpoints, long firstTokenTimeoutMs, long syncTimeoutMs) {
         this.endpoints = endpoints;
         this.firstTokenTimeoutMs = firstTokenTimeoutMs;
+        this.syncTimeoutMs = syncTimeoutMs;
     }
 
     @Override
@@ -44,10 +59,15 @@ public class ChatModelRouter implements ChatModel {
                 continue;
             }
             try {
-                ChatResponse resp = ep.model().call(prompt);
+                ChatResponse resp = CALL_EXECUTOR.submit(() -> ep.model().call(prompt))
+                        .get(syncTimeoutMs, TimeUnit.MILLISECONDS);
                 ep.breaker().recordSuccess();
                 currentModel.set(ep.name());
                 return resp;
+            } catch (TimeoutException e) {
+                last = new IllegalStateException("模型 " + ep.name() + " 同步调用超时(" + syncTimeoutMs + "ms)", e);
+                ep.breaker().recordFailure();
+                log.warn("{}: {}", last.getMessage(), e.getMessage());
             } catch (Exception e) {
                 last = e;
                 ep.breaker().recordFailure();
@@ -73,21 +93,24 @@ public class ChatModelRouter implements ChatModel {
             return tryStream(prompt, idx + 1);
         }
         String name = ep.name();
-        return ep.model().stream(prompt)
+        // P8-4d：成功/失败记录只归属"本端点自己的流"。doOnComplete 放在 onErrorResume 之前，
+        // 候选模型降级成功时不再把成功记到已失败的主端点（否则 HALF_OPEN 被误关回 CLOSED、
+        // 连续失败计数被清零、currentModel 显示成已失败模型）。
+        Flux<ChatResponse> attempt = ep.model().stream(prompt)
                 // 首包探测：firstTokenTimeoutMs 内无首个 token → 首包超时器先触发 → error → onErrorResume 降级；
                 // 后续 token 间隔不设限（模型思考/停顿不应触发降级）；空流完成也视为失败（switchIfEmpty）
                 .timeout(Mono.delay(Duration.ofMillis(firstTokenTimeoutMs)), item -> Mono.never())
                 .switchIfEmpty(Flux.error(new FirstTokenTimeoutException(name)))
-                .onErrorResume(e -> {
-                    ep.breaker().recordFailure();
-                    log.warn("模型 {} 流式调用失败（{}）: {}，切换到候选模型", name,
-                            e instanceof FirstTokenTimeoutException ? "首包超时" : "异常", e.getMessage());
-                    return tryStream(prompt, idx + 1);
-                })
                 .doOnComplete(() -> {
                     ep.breaker().recordSuccess();
                     currentModel.set(name);
                 });
+        return attempt.onErrorResume(e -> {
+            ep.breaker().recordFailure();
+            log.warn("模型 {} 流式调用失败（{}）: {}，切换到候选模型", name,
+                    e instanceof FirstTokenTimeoutException ? "首包超时" : "异常", e.getMessage());
+            return tryStream(prompt, idx + 1);
+        });
     }
 
     /** 当前降级链状态（端点 + 熔断器），供状态观测接口使用。 */

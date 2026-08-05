@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ragent.ai.config.MemorySummaryProperties;
 import com.ragent.ai.service.ChatMemoryService;
 import com.ragent.ai.service.MemorySummaryService;
+import com.ragent.common.context.RagentContext;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -16,6 +17,10 @@ import java.util.List;
  * 多轮会话记忆实现（Redis 滑动窗口 + LLM 摘要压缩）。
  * 按 conversationId 存最近 {@link MemorySummaryProperties#getWindowSize()} 条 {role, content} 消息，
  * TTL 7 天，每次写入刷新过期；窗口溢出时把最旧消息交给 MemorySummaryService 异步压缩为摘要。
+ * <p>
+ * P8-3c：存储键按当前请求用户作用域隔离（登录 → {@code u{userId}}，匿名 → {@code anon}），
+ * conversationId 为空回落 default 仍在本用户作用域内，杜绝跨用户串话。
+ * 升级后旧的无作用域键自然过期，登录态变化会得到全新的记忆（会话不跨账号）。
  */
 @Service
 public class ChatMemoryServiceImpl implements ChatMemoryService {
@@ -97,6 +102,6 @@ public class ChatMemoryServiceImpl implements ChatMemoryService {
 
     private static String key(String conversationId) {
         String id = conversationId == null || conversationId.isBlank() ? DEFAULT_CONVERSATION : conversationId;
-        return KEY_PREFIX + id;
+        return KEY_PREFIX + RagentContext.userScope() + ":" + id;
     }
 }

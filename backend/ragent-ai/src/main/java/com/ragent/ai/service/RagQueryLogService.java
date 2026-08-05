@@ -9,7 +9,7 @@ import com.ragent.ai.entity.RagQueryLog;
 public interface RagQueryLogService {
 
     /** 一次查询的可记录数据 */
-    record QueryLogData(Long userId, String conversationId, String question, String intent,
+    record QueryLogData(Long userId, String traceId, String conversationId, String question, String intent,
                         String rewrittenQuery, boolean gated, String sourcesJson,
                         String answer, long latencyMs, String error) {
     }
@@ -19,4 +19,7 @@ public interface RagQueryLogService {
 
     /** 分页查询（按时间倒序），供管理页/评测集挖掘 */
     IPage<RagQueryLog> list(long pageNum, long pageSize);
+
+    /** P8-6a：按会话+问题查最近一条查询日志（供反馈回填 traceId）；无匹配返回 null */
+    RagQueryLog findLatest(String conversationId, String question);
 }

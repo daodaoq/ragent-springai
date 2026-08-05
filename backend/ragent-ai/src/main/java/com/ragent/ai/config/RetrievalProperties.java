@@ -49,4 +49,12 @@ public class RetrievalProperties {
 
     /** 查询日志采集开关（每次 RAG 请求后台异步落库 rag_query_log，供评测集挖掘/质量分析） */
     private boolean queryLogEnabled = true;
+
+    /** P8-1a：重排后相关性分数下限（0 表示不启用阈值）。仅 rerank 成功时生效；
+     * RRF 归一化分数与 rerank relevance_score 尺度不同，降级路径不做阈值以免误杀。 */
+    private double minScore = 0;
+
+    /** P8-7a：检索结果缓存 TTL（秒，0=关闭）。避免重复查询每次重跑 ≤9 次检索 + rerank；
+     * 文档增删改/重切时主动失效，TTL 仅作兜底。 */
+    private int cacheTtlSeconds = 60;
 }

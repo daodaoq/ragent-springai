@@ -72,7 +72,8 @@ public class AiConfig {
             endpoints.add(new ModelEndpoint(name, fallback,
                     new CircuitBreaker(name, threshold, openMs, halfOpen)));
         }
-        return new ChatModelRouter(endpoints, modelFailoverProps.getFirstTokenTimeoutMs());
+        return new ChatModelRouter(endpoints, modelFailoverProps.getFirstTokenTimeoutMs(),
+                modelFailoverProps.getSyncTimeoutMs());
     }
 
     /**

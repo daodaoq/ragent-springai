@@ -38,6 +38,7 @@ public class RagQueryLogServiceImpl implements RagQueryLogService {
                 try {
                     RagQueryLog e = new RagQueryLog();
                     e.setUserId(d.userId());
+                    e.setTraceId(d.traceId());
                     e.setConversationId(d.conversationId());
                     e.setQuestion(d.question());
                     e.setIntent(d.intent());
@@ -61,5 +62,17 @@ public class RagQueryLogServiceImpl implements RagQueryLogService {
     public IPage<RagQueryLog> list(long pageNum, long pageSize) {
         return mapper.selectPage(new Page<>(pageNum, pageSize),
                 new LambdaQueryWrapper<RagQueryLog>().orderByDesc(RagQueryLog::getCreatedAt));
+    }
+
+    @Override
+    public RagQueryLog findLatest(String conversationId, String question) {
+        LambdaQueryWrapper<RagQueryLog> w = new LambdaQueryWrapper<>();
+        if (conversationId != null && !conversationId.isBlank()) {
+            w.eq(RagQueryLog::getConversationId, conversationId);
+        }
+        if (question != null && !question.isBlank()) {
+            w.eq(RagQueryLog::getQuestion, question);
+        }
+        return mapper.selectOne(w.orderByDesc(RagQueryLog::getCreatedAt).last("LIMIT 1"));
     }
 }

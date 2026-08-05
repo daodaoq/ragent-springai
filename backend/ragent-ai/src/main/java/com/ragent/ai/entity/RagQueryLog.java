@@ -21,6 +21,9 @@ public class RagQueryLog {
     /** 登录用户 ID（未登录为 null） */
     private Long userId;
 
+    /** P8-7b：全链路 traceId（与 ELK 请求日志关联，定位坏案例到请求链路） */
+    private String traceId;
+
     private String conversationId;
 
     /** 原始问题 */
