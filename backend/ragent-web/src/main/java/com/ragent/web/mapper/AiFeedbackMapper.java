@@ -13,7 +13,7 @@ public interface AiFeedbackMapper extends BaseMapper<AiFeedback> {
     @Select("""
             <script>
             SELECT f.id, f.user_id AS userId, u.nickname, f.conversation_id AS conversationId,
-                   f.question, f.answer, f.rating, f.created_at AS createdAt
+                   f.question, f.answer, f.rating, f.trace_id AS traceId, f.created_at AS createdAt
             FROM ai_feedback f
             LEFT JOIN sys_user u ON f.user_id = u.id
             <where>

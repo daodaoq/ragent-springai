@@ -22,6 +22,9 @@ public class AiFeedback {
     /** 评价用户（可能未登录） */
     private Long userId;
 
+    /** P8-6a：原回答的全链路 traceId（可关联查询日志/ELK 定位坏案例） */
+    private String traceId;
+
     private String conversationId;
 
     private String question;

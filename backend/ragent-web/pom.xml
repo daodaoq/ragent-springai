@@ -81,6 +81,16 @@
             <version>8.0</version>
         </dependency>
 
+        <!-- P8-8b 可观测性：actuator + Prometheus 指标暴露（/actuator/prometheus） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

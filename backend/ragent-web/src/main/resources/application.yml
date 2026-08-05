@@ -73,6 +73,8 @@ sa-token:
   token-name: Authorization
   token-prefix: Bearer
   timeout: 2592000
+  # P8-8c：active-timeout=滑动续期——持续活跃可无限续期，静止 30 天才过期，替代"固定 30 天一刀切"
+  active-timeout: 2592000
   is-log: false
 
 # 分片配置（结构感知分片器）
@@ -100,6 +102,9 @@ ragent:
     # 送入重排的候选数
     rerank-top-n: 10
     rerank-model: gte-rerank-v2
+    # P8-1a 幻觉防护：重排成功时过滤低于该相关度分数的结果（0=关闭）。低相关不返回 → 空结果硬门禁拒答。
+    # 注意：仅 rerank 成功路径生效；如评测 Recall 明显下降可调低或置 0。
+    min-score: 0.3
     # 复用百炼向量 Key（gitignored application-local.yml 中 spring.ai.openai.embedding.api-key）
     rerank-api-key: ${spring.ai.openai.embedding.api-key:}
     # P6 查询处理管线（A-G 各阶段的启停/顺序在 DB kb_query_stage，前端编排页可改）
@@ -124,11 +129,23 @@ ragent:
     open-duration-ms: 30000         # 熔断打开时长
     half-open-max-calls: 1          # HALF_OPEN 放行试调用数（1 次成功即恢复）
     first-token-timeout-ms: 8000    # 流式首包超时
+    # P8-4b 同步 .call() 超时：意图改写/Agent 工具循环/摘要压缩/评测裁判的阻塞调用上限，防模型挂死占线程
+    sync-timeout-ms: 30000
   # 会话记忆：滑动窗口 + LLM 摘要压缩（溢出压缩，Redis + MySQL 双持久化）
   memory:
     window-size: 12                 # 滑动窗口条数，超过即压缩最旧部分
     summary-enabled: true           # 摘要压缩开关
     summary-max-chars: 1500         # 摘要长度上限（控制 Token 成本）
+
+# P8-8b 可观测性：暴露 Prometheus 指标端点（Prometheus 抓取 /api/actuator/prometheus）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name:ragent}
 
 logging:
   level:

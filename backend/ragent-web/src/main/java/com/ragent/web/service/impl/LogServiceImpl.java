@@ -149,6 +149,8 @@ public class LogServiceImpl implements LogService {
                 item.put("module", src.path("module").asText(""));
                 item.put("action", src.path("action").asText(""));
                 item.put("userId", src.path("userId").asText(""));
+                // P8-7b：ELK 日志带 traceId（logback MDC 白名单），前端日志页可展示并与查询日志关联
+                item.put("traceId", src.path("traceId").asText(""));
 
                 list.add(item);
             }

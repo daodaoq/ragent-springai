@@ -4,6 +4,8 @@ import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.ragent.ai.entity.RagQueryLog;
+import com.ragent.ai.service.RagQueryLogService;
 import com.ragent.common.exception.BusinessException;
 import com.ragent.common.exception.ErrorCode;
 import com.ragent.common.result.PageResult;
@@ -23,6 +25,7 @@ import org.springframework.stereotype.Service;
 public class FeedbackServiceImpl implements FeedbackService {
 
     private final AiFeedbackMapper aiFeedbackMapper;
+    private final RagQueryLogService queryLogService;
 
     @Override
     public void submit(FeedbackDTO dto) {
@@ -34,10 +37,28 @@ public class FeedbackServiceImpl implements FeedbackService {
         feedback.setQuestion(dto.question());
         feedback.setAnswer(dto.answer());
         feedback.setRating(dto.rating());
+        feedback.setTraceId(resolveTraceId(dto));
         if (StpUtil.isLogin()) {
             feedback.setUserId(StpUtil.getLoginIdAsLong());
         }
         aiFeedbackMapper.insert(feedback);
+    }
+
+    /**
+     * P8-6a：回填原回答的 traceId——前端拿不到服务端生成的 traceId，
+     * 这里优先用 DTO 显式传入值，否则按「会话 + 问题」从查询日志取最近一条的 traceId，
+     * 使"被踩的回答"能关联到 ELK 请求链路与检索来源。
+     */
+    private String resolveTraceId(FeedbackDTO dto) {
+        if (dto.traceId() != null && !dto.traceId().isBlank()) {
+            return dto.traceId();
+        }
+        try {
+            RagQueryLog log = queryLogService.findLatest(dto.conversationId(), dto.question());
+            return log == null ? null : log.getTraceId();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Override

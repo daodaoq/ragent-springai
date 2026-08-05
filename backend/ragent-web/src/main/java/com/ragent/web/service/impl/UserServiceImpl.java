@@ -17,9 +17,11 @@ import com.ragent.web.mapper.UserMapper;
 import com.ragent.web.service.FileService;
 import com.ragent.web.service.UserService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 
@@ -33,9 +35,15 @@ public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final FileService fileService;
+    private final StringRedisTemplate redisTemplate;
 
     /** 允许的角色枚举值 */
     private static final Set<String> ALLOWED_ROLES = Set.of("STUDENT", "TEACHER", "ADMIN");
+
+    /** P8-8c：登录失败锁——同一用户名连续失败上限与锁定窗口，防暴力破解 */
+    private static final int MAX_LOGIN_FAILS = 5;
+    private static final Duration LOGIN_LOCK_DURATION = Duration.ofMinutes(15);
+    private static final String LOGIN_FAIL_KEY_PREFIX = "login:fail:";
 
     @Override
     public UserVO register(RegisterDTO dto) {
@@ -48,17 +56,38 @@ public class UserServiceImpl implements UserService {
         user.setUsername(dto.username());
         user.setPassword(passwordEncoder.encode(dto.password()));
         user.setNickname(dto.nickname());
-        user.setRole(dto.role() == null || dto.role().isBlank() ? "STUDENT" : dto.role());
+        // P8-8c：自注册一律 STUDENT，教师/管理员角色由管理员授予
+        user.setRole("STUDENT");
         userMapper.insert(user);
         return toVO(user);
     }
 
     @Override
     public LoginResult login(LoginDTO dto) {
+        // P8-8c：暴力破解防护——连续失败达上限锁定一段时间
+        String failKey = LOGIN_FAIL_KEY_PREFIX + dto.username();
+        Integer fails = redisTemplate.opsForValue().get(failKey) == null
+                ? 0 : Integer.parseInt(redisTemplate.opsForValue().get(failKey));
+        if (fails >= MAX_LOGIN_FAILS) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST,
+                    "登录失败次数过多，账号已临时锁定 " + LOGIN_LOCK_DURATION.toMinutes() + " 分钟");
+        }
         User user = userMapper.selectOne(new LambdaQueryWrapper<User>()
                 .eq(User::getUsername, dto.username()));
         if (user == null || !passwordEncoder.matches(dto.password(), user.getPassword())) {
+            try {
+                Long n = redisTemplate.opsForValue().increment(failKey);
+                if (n != null && n == 1) {
+                    redisTemplate.expire(failKey, LOGIN_LOCK_DURATION);
+                }
+            } catch (Exception ignore) {
+                // Redis 异常不影响登录主流程
+            }
             throw new BusinessException(ErrorCode.BAD_REQUEST, "用户名或密码错误");
+        }
+        try {
+            redisTemplate.delete(failKey);
+        } catch (Exception ignore) {
         }
         StpUtil.login(user.getId());
         return new LoginResult(StpUtil.getTokenValue(), toVO(user));

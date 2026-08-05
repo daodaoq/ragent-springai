@@ -14,5 +14,7 @@ public record FeedbackVO(
         String answer,
         /** 1 赞 / -1 踩 */
         Integer rating,
+        /** 原回答 traceId（可关联查询日志/ELK） */
+        String traceId,
         LocalDateTime createdAt) {
 }

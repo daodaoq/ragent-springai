@@ -1,6 +1,8 @@
 package com.ragent.web.controller;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.annotation.SaCheckRole;
+import cn.dev33.satoken.annotation.SaMode;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ragent.ai.entity.DocumentChunk;
@@ -65,7 +67,7 @@ public class KnowledgeBaseController {
 
     /** 重新切片：按新参数覆盖重新切分+向量化（先清旧切片/向量），null 字段 = 重置回全局默认 */
     @PostMapping("/documents/{id}/rechunk")
-    @SaCheckLogin
+    @SaCheckRole(value = {"ADMIN", "TEACHER"}, mode = SaMode.OR)
     public Result<KbDocument> rechunk(@PathVariable Long id,
                                       @RequestBody(required = false) KnowledgeBaseService.ChunkParams params) {
         return Result.success(kbService.rechunk(id, params));
@@ -95,20 +97,22 @@ public class KnowledgeBaseController {
     private record UploadConfig(String filename, Integer maxChunkChars, Integer overlapChars, Boolean semantic) {
     }
 
+    /** 文档列表（P8-8c：改为登录可见，避免匿名探测知识库文件名/状态） */
     @GetMapping("/documents")
+    @SaCheckLogin
     public Result<List<KbDocument>> list() {
         return Result.success(kbService.list());
     }
 
     /** 重试处理失败的文档：从 MinIO 读原始文件重新切分+向量化，无需重新上传 */
     @PostMapping("/documents/{id}/retry")
-    @SaCheckLogin
+    @SaCheckRole(value = {"ADMIN", "TEACHER"}, mode = SaMode.OR)
     public Result<KbDocument> retry(@PathVariable Long id) {
         return Result.success(kbService.retry(id));
     }
 
     @DeleteMapping("/documents/{id}")
-    @SaCheckLogin
+    @SaCheckRole(value = {"ADMIN", "TEACHER"}, mode = SaMode.OR)
     public Result<Void> delete(@PathVariable Long id) {
         kbService.delete(id);
         return Result.success();
@@ -116,7 +120,7 @@ public class KnowledgeBaseController {
 
     /** 批量删除：一次删除多个文档（含切片、向量、MinIO 原始文件） */
     @PostMapping("/documents/batch-delete")
-    @SaCheckLogin
+    @SaCheckRole(value = {"ADMIN", "TEACHER"}, mode = SaMode.OR)
     public Result<Void> deleteBatch(@RequestBody List<Long> ids) {
         kbService.deleteBatch(ids);
         return Result.success();

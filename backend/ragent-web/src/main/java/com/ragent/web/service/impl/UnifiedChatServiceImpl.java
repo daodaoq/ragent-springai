@@ -54,7 +54,10 @@ public class UnifiedChatServiceImpl implements UnifiedChatService {
         String baseKey = rateLimitProps.getQueueKey();
         RedisRateLimiter.Attempt attempt = rateLimiter.acquire(baseKey);
         return switch (attempt.result()) {
-            case 1 -> engine(q, conversationId, userId)
+            // P8-4a：engine 内部含意图 LLM 调用与 RAG 检索（JDBC+gRPC+rerank 可达 30s），
+            // 必须 Flux.defer + subscribeOn(boundedElastic)，否则在 Netty 事件循环线程上同步执行
+            case 1 -> Flux.defer(() -> engine(q, conversationId, userId))
+                    .subscribeOn(Schedulers.boundedElastic())
                     .doFinally(sig -> rateLimiter.release(attempt.reqId(), baseKey));
             case -1 -> rejected(rateLimiter.reason(attempt.reqId()));
             default -> queued(attempt, q, conversationId, userId);
@@ -69,7 +72,9 @@ public class UnifiedChatServiceImpl implements UnifiedChatService {
         Flux<ServerSentEvent<String>> status = rateLimiter.queueEvents(reqId, baseKey)
                 .concatMap(ev -> {
                     if (QueueEvent.ADMITTED.equals(ev.type())) {
-                        return engine(q, conversationId, userId).subscribeOn(Schedulers.boundedElastic());
+                        // P8-4a：defer 延迟到订阅时才执行 engine（内部含 LLM/检索阻塞调用），移到 boundedElastic
+                        return Flux.defer(() -> engine(q, conversationId, userId))
+                                .subscribeOn(Schedulers.boundedElastic());
                     }
                     if (QueueEvent.REJECTED.equals(ev.type())) {
                         return rejected(ev.reason());
