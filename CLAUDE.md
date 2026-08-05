@@ -16,7 +16,9 @@
 - **雪花 Long ID 必须字符串序列化**：`JacksonConfig` 已把 boxed Long 全局转字符串；新增接口返回雪花 ID 用 boxed Long，统计计数用 primitive long。前端严禁 `Number(id)`。
 - **Qdrant 走 gRPC 端口 6334**（不是 REST 6333）；payload 不支持 Long，雪花 ID 转 String；`initialize-schema: true`。
 - **检索两端都要过滤文档状态**：稠密向量通道靠 `RetrievalServiceImpl.filterActiveDocuments`（按 documentId 反查 `kb_document`：READY + deleted=0 + source=UPLOAD）；关键词通道 SQL 已带 `d.status='READY' AND d.deleted=0`。改检索必须保持两路一致。
+- **多知识库按 kbId 收窄，正确性靠 DB 后置过滤**：`filterActiveDocuments` 加 `kb_id` 谓词 + 关键词 SQL `d.kb_id = ?` + 检索缓存键含 kbId；稠密 payload 预过滤走 `retrieval.dense-filter-by-kbid`（默认关，旧向量 payload 无 kbId，开启会隐藏历史文档）。**实体过滤零召回重试必须保留 kbId**（`RetrievalServiceImpl.doRetrieve`），否则指定库检索重试后泄漏跨库结果。kbId 不经过 QueryPipeline（独立参数 `stream(..., kbId)` → `ragStream(..., kbId)`）。
 - **评测样例文档标 `source=EVAL`**：生产检索与知识库列表排除；评测检索用 `ragService.retrieve(q, k, processed, true)`。
+- **摄入已异步化（P9-5a）**：upload/rechunk/retry 只入队 `ingest_task` 秒回，worker 消费；状态机 QUEUED→RUNNING→SUCCESS/DLQ，`kb_document` 增 PROCESSING。**`process()` 必须保留原始错误码**（400=永久直进 DLQ，500=瞬时自动重试），别包成 SYSTEM_ERROR 让坏文件烧满重试次数。`enqueueUpload(file, params, kbId)` 里 MinIO 失败置 FAILED 重抛，任务表 insert 失败也要置 FAILED（防 PENDING 无任务卡死）。
 - **会话记忆键带用户作用域**：`RagentContext.userScope()`（登录→`u{id}`，匿名→`anon`），改记忆逻辑别丢掉前缀。
 - **SSE 事件协议**：`/ai/stream` 先 `mode` → 引擎事件（RAG：`rewritten` → `sources` → `content`；Agent：`tool-call` → `content`；Chat：`content`）；旧端点 `/ai/chat|rag|agent/stream` 是限流兼容壳。
 - **限流**：`RedisRateLimiter` 的 release Lua 是状态感知的（仅 admitted 才 DECR inFlight）；新加限流路径只对"曾 admitted"的请求调 release。
@@ -25,7 +27,7 @@
 
 ## 迁移脚本（一次性，勿重复）
 
-`backend/sql/` 下：`schema.sql`（新装）、`p4_retrieval.sql`（FULLTEXT 索引，缺失关键词通道降级）、`p8_trace_id.sql` / `p8_eval.sql` / `p8_source.sql`（P8 增量列/表）。启动时 `FulltextIndexCheck` 自检 FULLTEXT 索引并打 WARN。
+`backend/sql/` 下：`schema.sql`（新装）、`p4_retrieval.sql`（FULLTEXT 索引，缺失关键词通道降级）、`p8_trace_id.sql` / `p8_eval.sql` / `p8_source.sql`（P8 增量列/表）、`p9_async_ingest.sql` / `p9_multi_kb.sql`（P9 异步任务表 + 多知识库）。启动时 `FulltextIndexCheck` 自检 FULLTEXT 索引并打 WARN。
 
 ## 文档
 
@@ -34,5 +36,5 @@
 
 ## 当前已知待办（P1/P2 剩余）
 
-- P1：5a 异步摄取任务表、5c OCR、7a 检索缓存（已做）→ 剩余 5a/5c。
-- P2：多知识库/租户隔离、RAGAS context 指标、密钥默认值清理、中间件鉴权、HA、应用容器化。
+- P1：5a 异步摄取任务表（✅ P9 已完成）、7a 检索缓存（✅）→ 剩余 **5c OCR**（用户决策暂缓，方案已评估见审查报告）。
+- P2：多知识库（✅ P9 共享池 + 分级管理已完成）、RAGAS context 指标、密钥默认值清理、中间件鉴权、HA、应用容器化。

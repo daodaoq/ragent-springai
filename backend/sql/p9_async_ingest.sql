@@ -5,8 +5,7 @@
 -- 大文档 + 嵌入调用可让单次上传拖几十秒。现改为：上传仅做校验+落 MinIO+入队（秒回），
 -- 文本抽取/切分/向量化由 ingest_task 队列的轮询 worker 异步消费，失败自动重试（瞬时）或进 DLQ（永久）。
 --
--- 幂等：已执行过则重复执行无副作用（CREATE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS）。
--- 已存在的库需手动执行一次；新装见 schema.sql（已并入）。
+-- 对已存在的库执行一次（勿重复；重复执行会因列已存在报错，无副作用）；新装见 schema.sql（已并入）。
 -- ============================================
 
 CREATE TABLE IF NOT EXISTS `ingest_task` (
@@ -26,4 +25,4 @@ CREATE TABLE IF NOT EXISTS `ingest_task` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库异步处理任务表';
 
 -- kb_document 补失败原因（前端 FAILED 徽章可展示；worker 写 DLQ 时回填）
-ALTER TABLE `kb_document` ADD COLUMN IF NOT EXISTS `error_msg` VARCHAR(1000) DEFAULT NULL COMMENT '最近一次处理失败原因' AFTER `source`;
+ALTER TABLE `kb_document` ADD COLUMN `error_msg` VARCHAR(1000) DEFAULT NULL COMMENT '最近一次处理失败原因' AFTER `source`;

@@ -5,8 +5,7 @@
 -- 无用户-知识库成员表，owner_id 仅作记录（展示"创建人"），不参与检索过滤。
 -- 检索按 kb_id 收窄（聊天页 KB 下拉；null=全部库），正确性由 DB 侧 kb_document.kb_id 保证。
 --
--- 幂等：已执行过则重复执行无副作用（CREATE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS）。
--- 已存在的库需手动执行一次；新装见 schema.sql（已并入）。
+-- 对已存在的库执行一次（勿重复；重复执行会因列已存在报错，无副作用）；新装见 schema.sql（已并入）。
 -- ============================================
 
 -- 知识库表（AUTO_INCREMENT；id=1 保留给默认库，历史文档/评测文档归此）
@@ -29,11 +28,10 @@ INSERT INTO `kb` (`id`, `name`, `description`, `is_default`, `created_at`, `upda
 SELECT 1, '默认知识库', '系统默认知识库：历史文档与评测文档归入此库', 1, NOW(), NOW()
 WHERE NOT EXISTS (SELECT 1 FROM `kb` WHERE `is_default` = 1);
 
--- kb_document 补所属库列 + 回填默认库 + 索引
-ALTER TABLE `kb_document` ADD COLUMN IF NOT EXISTS `kb_id` BIGINT DEFAULT NULL COMMENT '所属知识库ID(kb.id)' AFTER `id`;
+-- kb_document 补所属库列 + 回填默认库 + 索引（一次性；重复执行报列已存在/索引已存在，无副作用）
+ALTER TABLE `kb_document` ADD COLUMN `kb_id` BIGINT DEFAULT NULL COMMENT '所属知识库ID(kb.id)' AFTER `id`;
 UPDATE `kb_document` SET `kb_id` = 1 WHERE `kb_id` IS NULL;
-DROP INDEX IF EXISTS `idx_kb_id` ON `kb_document`;
 CREATE INDEX `idx_kb_id` ON `kb_document` (`kb_id`);
 
 -- rag_query_log 记录本次检索限定的知识库（便于按库分析查询质量）
-ALTER TABLE `rag_query_log` ADD COLUMN IF NOT EXISTS `kb_id` BIGINT DEFAULT NULL COMMENT '本次检索限定的知识库ID(NULL=全部库)' AFTER `error`;
+ALTER TABLE `rag_query_log` ADD COLUMN `kb_id` BIGINT DEFAULT NULL COMMENT '本次检索限定的知识库ID(NULL=全部库)' AFTER `error`;
