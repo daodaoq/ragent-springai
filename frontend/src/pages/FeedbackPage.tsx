@@ -165,6 +165,11 @@ export default function FeedbackPage() {
                           👍 有帮助
                         </span>
                       )}
+                      {r.traceId && (
+                        <div className="mt-1 text-[10px] text-slate-400 font-mono max-w-[140px] truncate" title={r.traceId}>
+                          traceId: {r.traceId}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )

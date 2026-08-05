@@ -17,7 +17,6 @@ const MODULES = ['', 'controller', 'service', 'aspect', 'mapper', 'config']
 export default function LogsPage() {
   const [records, setRecords] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
-  const [totalPages, setTotalPages] = useState(0)
   const [pageNum, setPageNum] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [levelFilter, setLevelFilter] = useState('')
@@ -42,7 +41,6 @@ export default function LogsPage() {
       })
       setRecords(res.data.list)
       setTotal(res.data.total)
-      setTotalPages(res.data.pages)
     } catch (err) {
       setMsg(err instanceof Error ? err.message : '查询日志失败')
     } finally {
@@ -201,6 +199,7 @@ export default function LogsPage() {
                           <div className="mt-1.5 flex flex-wrap gap-3 text-xs text-slate-400">
                             {entry.userId && <span>用户: {entry.userId}</span>}
                             {entry.action && <span>操作: {entry.action}</span>}
+                            {entry.traceId && <span className="font-mono">traceId: {entry.traceId}</span>}
                             {entry.logger && <span className="font-mono">{entry.logger}</span>}
                             {msgLen > 120 && (
                               <button

@@ -108,5 +108,6 @@ export interface FeedbackRecord {
   question: string
   answer: string
   rating: 1 | -1
+  traceId: string | null
   createdAt: string
 }

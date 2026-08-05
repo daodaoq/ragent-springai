@@ -3,6 +3,7 @@ import * as echarts from 'echarts'
 import { useChart } from '../components/useChart'
 import {
   getChunkSettings,
+  getEvalHistory,
   getQualityReport,
   getQueryLogs,
   runEval,
@@ -12,6 +13,7 @@ import type {
   ChunkQualityReport,
   ChunkSettings,
   DocQuality,
+  EvalHistoryItem,
   EvalReport,
   QualityBucket,
   QueryLogEntry,
@@ -73,6 +75,8 @@ export default function ChunkQualityPage() {
     running: 'off' | 'on' | 'both' | null
     error: string
   }>({ off: null, on: null, running: null, error: '' })
+  /** P8-6b：评测历史（已持久化，支持趋势/回归对比） */
+  const [evalHistory, setEvalHistory] = useState<EvalHistoryItem[]>([])
 
   // 文档明细表 / 评测用例表客户端分页
   const docPaging = usePagination(report?.docs ?? [], 10)
@@ -116,6 +120,7 @@ export default function ChunkQualityPage() {
   useEffect(() => {
     load()
     loadQueryLogs(1, 10)
+    loadEvalHistory()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -186,8 +191,19 @@ export default function ChunkQualityPage() {
 
   // ==================== RAG 评测（A/B） ====================
 
+  /** P8-6b：加载评测历史（跑完评测后刷新） */
+  const loadEvalHistory = async () => {
+    try {
+      const res = await getEvalHistory(10)
+      setEvalHistory(res.data ?? [])
+    } catch {
+      setEvalHistory([])
+    }
+  }
+
   const runEvalOnce = async (processed: boolean): Promise<EvalReport> => {
     const res = await runEval({ processed, withAnswer: evalWithAnswer })
+    await loadEvalHistory()
     return res.data
   }
 
@@ -629,6 +645,44 @@ export default function ChunkQualityPage() {
                 />
               </div>
             )}
+
+            {/* P8-6b：评测历史（结果已持久化，可对比趋势/回归） */}
+            {evalHistory.length > 0 && (
+              <div className="mt-4 border-t border-slate-100 pt-3">
+                <div className="text-xs text-slate-400 mb-1.5">📈 历史评测（最近 {evalHistory.length} 次，结果已持久化）</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-slate-400">
+                        <th className="py-1 pr-3 font-normal">时间</th>
+                        <th className="py-1 pr-3 font-normal">模式</th>
+                        <th className="py-1 pr-3 font-normal">Recall@5</th>
+                        <th className="py-1 pr-3 font-normal">NDCG@5</th>
+                        <th className="py-1 pr-3 font-normal">忠实度</th>
+                        <th className="py-1 pr-3 font-normal">相关度</th>
+                        <th className="py-1 font-normal">引用率</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {evalHistory.map((h) => (
+                        <tr key={h.id} className="text-slate-600">
+                          <td className="py-1 pr-3 whitespace-nowrap">{formatTime(h.createdAt)}</td>
+                          <td className="py-1 pr-3">
+                            {h.processed ? '管线' : '原样'}
+                            {h.withAnswer ? '' : '（仅检索）'}
+                          </td>
+                          <td className="py-1 pr-3 font-mono">{h.recall?.toFixed(3) ?? '—'}</td>
+                          <td className="py-1 pr-3 font-mono">{h.ndcg?.toFixed(3) ?? '—'}</td>
+                          <td className="py-1 pr-3 font-mono">{h.avgFaithfulness?.toFixed(2) ?? '—'}</td>
+                          <td className="py-1 pr-3 font-mono">{h.avgRelevance?.toFixed(2) ?? '—'}</td>
+                          <td className="py-1 font-mono">{h.citationRate ? `${(h.citationRate * 100).toFixed(0)}%` : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
             </>
           )}
@@ -721,6 +775,12 @@ export default function ChunkQualityPage() {
                                   <div className="text-xs text-slate-600 whitespace-pre-wrap line-clamp-4">
                                     {r.answer}
                                   </div>
+                                </div>
+                              )}
+                              {(r.traceId || r.conversationId) && (
+                                <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-400">
+                                  {r.traceId && <span className="font-mono">traceId: {r.traceId}</span>}
+                                  {r.conversationId && <span>会话: {r.conversationId}</span>}
                                 </div>
                               )}
                             </td>

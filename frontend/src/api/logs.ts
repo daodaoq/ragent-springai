@@ -11,6 +11,7 @@ export interface LogEntry {
   module: string
   action: string
   userId: string
+  traceId: string
 }
 
 export interface LogPage {

@@ -117,11 +117,33 @@ export interface EvalReport {
 export const runEval = (params?: { processed?: boolean; withAnswer?: boolean }) =>
   http.post('/eval/run', params, { timeout: 300000 }) as Promise<ApiResult<EvalReport>>
 
+// ---------------- 评测历史（P8-6b：结果已持久化，支持趋势/回归对比） ----------------
+
+export interface EvalHistoryItem {
+  id: string
+  processed: boolean
+  withAnswer: boolean
+  totalCases: number
+  recall: number | null
+  precision: number | null
+  mrr: number | null
+  ndcg: number | null
+  avgFaithfulness: number | null
+  avgRelevance: number | null
+  citationRate: number | null
+  createdAt: string
+}
+
+export const getEvalHistory = (limit = 10) =>
+  http.get('/eval/history', { params: { limit } }) as Promise<ApiResult<EvalHistoryItem[]>>
+
 // ---------------- 真实查询日志（/kb/query-log，自动采集每次 RAG 请求轨迹） ----------------
 
 export interface QueryLogEntry {
   id: string
   userId: string | null
+  /** 全链路 traceId（可关联 ELK 请求日志） */
+  traceId: string | null
   conversationId: string | null
   question: string
   intent: string | null

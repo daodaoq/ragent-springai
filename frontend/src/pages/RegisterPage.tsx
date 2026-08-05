@@ -9,7 +9,6 @@ export default function RegisterPage() {
   const [nickname, setNickname] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
-  const [role, setRole] = useState('STUDENT')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -22,7 +21,7 @@ export default function RegisterPage() {
     setError('')
     setLoading(true)
     try {
-      await register({ username, password, nickname, role })
+      await register({ username, password, nickname })
       navigate('/login')
     } catch (err) {
       setError(err instanceof Error ? err.message : '注册失败')
@@ -49,13 +48,8 @@ export default function RegisterPage() {
             onChange={(e) => setPassword(e.target.value)} required minLength={6} />
           <input type="password" className={inputCls} placeholder="确认密码" value={confirm}
             onChange={(e) => setConfirm(e.target.value)} required />
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 text-sm text-slate-600">
-              <input type="radio" checked={role === 'STUDENT'} onChange={() => setRole('STUDENT')} /> 学生
-            </label>
-            <label className="flex items-center gap-2 text-sm text-slate-600">
-              <input type="radio" checked={role === 'TEACHER'} onChange={() => setRole('TEACHER')} /> 教师
-            </label>
+          <div className="text-xs text-slate-400">
+            注册后默认为「学生」，教师/管理员身份由管理员在用户管理中授予
           </div>
           <button
             type="submit"
