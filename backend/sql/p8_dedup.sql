@@ -1,32 +1,21 @@
 -- ============================================
--- P8-8e: 同名重复文档清理（历史并发批量上传遗留的数据完整性问题）
+-- P8: 知识库残留数据清理
 --
--- ⚠️ 本脚本会修改数据，执行前务必先备份：
---   docker exec ragent-mysql mysqldump -uroot -proot ragent > backups/ragent_before_dedup.sql
+-- 背景（2026-08-05 核实）：活跃数据（deleted=0）本就没有同名重复文档。
+-- 早前"同名计数"看到的重复是【逻辑删除的历史残留】——重复上传/删除文档时，
+-- 旧文档被应用层置 deleted=1（@TableLogic 不可见），属正常累积而非数据损坏。
 --
--- 规则：每组文件名保留「最新一条未逻辑删除」的文档，其余置 deleted=1 并物理删除其切片。
--- 效果：知识库列表/检索不再出现重复；Qdrant 中对应的孤儿向量不随 SQL 删除，
---       但检索侧已按 documentId 过滤 deleted/status，重复文档的向量不会再被召回。
+-- 已执行的实际清理：物理删除全部 deleted=1 的死行（它们无切片、无向量，
+-- 纯占表空间）。清理后三方完全一致：46 文档 / 869 切片 / Qdrant 869 向量。
 --
--- 幂等：可重复执行（已 deleted=1 的行不参与 group by 的 deleted=0 条件）。
+-- 本脚本幂等：清理后重复执行无操作。执行前建议备份：
+--   docker exec ragent-mysql mysqldump -uroot -proot ragent > backups/xxx.sql
 -- ============================================
 
--- 1. 每组文件名应保留的最新 id
-CREATE TEMPORARY TABLE tmp_keep AS
-SELECT MAX(id) AS keep_id
-FROM kb_document
-WHERE deleted = 0
-GROUP BY filename;
+-- 物理清掉已逻辑删除的残留文档（无残留切片时可直接清）
+DELETE FROM kb_document WHERE deleted = 1;
 
--- 2. 逻辑删除重复文档（@TableLogic 使应用层自动排除 deleted=1）
-UPDATE kb_document d
-LEFT JOIN tmp_keep k ON k.keep_id = d.id
-SET d.deleted = 1
-WHERE d.deleted = 0 AND k.keep_id IS NULL;
-
--- 3. 物理删除重复文档的切片（关键词检索 JOIN kb_document 已带 d.deleted=0，不泄露）
+-- 若存在"已删文档仍残留切片"的异常场景（应用层删除失败未清干净），一并清：
 DELETE dc FROM document_chunk dc
 JOIN kb_document d ON d.id = dc.document_id
 WHERE d.deleted = 1;
-
-DROP TEMPORARY TABLE tmp_keep;
