@@ -48,6 +48,17 @@ public final class RagentContext {
         return HOLDER.get();
     }
 
+    /**
+     * P8-3c：当前请求的用户作用域标识——登录用户返回 {@code u{userId}}，匿名返回 {@code anon}。
+     * 用于给会话记忆、摘要等用户态数据的存储键加前缀，避免跨用户串话
+     * （匿名用户之间仍共享同一作用域，无法区分匿名者；登录用户彼此及与匿名流量完全隔离）。
+     */
+    public static String userScope() {
+        RagentContext ctx = current();
+        Long uid = ctx == null ? null : ctx.userId();
+        return uid == null ? "anon" : "u" + uid;
+    }
+
     /** 设置上下文并同步 MDC；传 null 等价于 {@link #clear()}。 */
     public static void set(RagentContext ctx) {
         if (ctx == null) {
