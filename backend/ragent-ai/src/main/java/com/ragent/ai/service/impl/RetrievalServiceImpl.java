@@ -87,7 +87,8 @@ public class RetrievalServiceImpl implements RetrievalService {
     }
 
     private String cacheKey(RetrievalQuery rq, int topK) {
-        return topK + "|" + String.valueOf(rq.filter()) + "|" + rq.rerankQuery()
+        // P9：kbId 参与缓存键——同一查询不同库不互相命中，避免指定库检索泄漏跨库缓存结果
+        return topK + "|" + rq.kbId() + "|" + String.valueOf(rq.filter()) + "|" + rq.rerankQuery()
                 + "|" + rq.denseQueries() + "|" + rq.keywordQueries();
     }
 
@@ -107,14 +108,14 @@ public class RetrievalServiceImpl implements RetrievalService {
         // 多路稠密：每路一个查询 → 一路 ranked list；多路关键词同理
         List<List<Document>> ranked = new ArrayList<>();
         for (String q : rq.denseQueries()) {
-            List<Document> d = denseSearch(q, props.getDenseTopN(), rq.filter());
+            List<Document> d = denseSearch(q, props.getDenseTopN(), rq.filter(), rq.kbId());
             if (!d.isEmpty()) {
                 ranked.add(d);
             }
         }
         if (props.isKeywordEnabled()) {
             for (String q : rq.keywordQueries()) {
-                List<Document> k = keywordSearch(q, props.getKeywordTopN(), rq.filter());
+                List<Document> k = keywordSearch(q, props.getKeywordTopN(), rq.filter(), rq.kbId());
                 if (!k.isEmpty()) {
                     ranked.add(k);
                 }
@@ -144,9 +145,11 @@ public class RetrievalServiceImpl implements RetrievalService {
 
         // P8-1c：实体过滤（filename/page）是硬性 AND，LLM 误抽文件名会致双路零召回 →
         // 去掉过滤重试一次（空结果不再盲信过滤器，避免"检索到垃圾"直接变"零召回"）
+        // P9：重试必须保留 kbId——丢掉它会让"指定库检索"在重试后泄漏跨库结果
         if (result.isEmpty() && rq.filter() != null) {
-            log.warn("实体过滤下零召回，去掉过滤重试: filter={}", rq.filter());
-            return retrieve(new RetrievalQuery(rq.rerankQuery(), rq.denseQueries(), rq.keywordQueries(), null, rq.includeEval()), topK);
+            log.warn("实体过滤下零召回，去掉过滤重试: filter={} kbId={}", rq.filter(), rq.kbId());
+            return retrieve(new RetrievalQuery(rq.rerankQuery(), rq.denseQueries(), rq.keywordQueries(),
+                    null, rq.includeEval(), rq.kbId()), topK);
         }
 
         // P8-1a：相关性阈值——仅重排成功时生效（relevance_score 才是真实相关度；
@@ -166,7 +169,8 @@ public class RetrievalServiceImpl implements RetrievalService {
         // 按 documentId 反查 kb_document 后置过滤，只保留 READY 且未逻辑删除的文档切片。
         // 关键词通道 SQL 已带 d.status='READY' AND d.deleted=0 过滤，此步拉齐两路行为。
         // P8-6c：生产检索（includeEval=false）额外排除 EVAL 评测样例文档。
-        return filterActiveDocuments(finalResult, rq.includeEval());
+        // P9：kbId 非空时一并按 kb_document.kb_id 收窄（稠密通道的正确性保障——旧向量 payload 无 kbId）。
+        return filterActiveDocuments(finalResult, rq.includeEval(), rq.kbId());
     }
 
     /**
@@ -175,7 +179,7 @@ public class RetrievalServiceImpl implements RetrievalService {
      * 丢弃非 READY 文档的切片；元数据缺失 documentId 的切片防御性保留。
      * P8-6c：includeEval=false（生产）额外只保留 source='UPLOAD' 的文档，评测样例（EVAL）不进入真实检索。
      */
-    private List<Document> filterActiveDocuments(List<Document> docs, boolean includeEval) {
+    private List<Document> filterActiveDocuments(List<Document> docs, boolean includeEval, Long kbId) {
         if (docs == null || docs.isEmpty()) {
             return docs;
         }
@@ -203,6 +207,10 @@ public class RetrievalServiceImpl implements RetrievalService {
             if (!includeEval) {
                 wrapper.eq(KbDocument::getSource, "UPLOAD");
             }
+            // P9：指定库检索时按 kb_id 收窄（旧向量 payload 无 kbId，稠密通道正确性全靠此 DB 后置过滤）
+            if (kbId != null) {
+                wrapper.eq(KbDocument::getKbId, kbId);
+            }
             active = kbDocumentMapper.selectList(wrapper)
                     .stream().map(KbDocument::getId).collect(java.util.stream.Collectors.toSet());
         } catch (Exception e) {
@@ -229,9 +237,9 @@ public class RetrievalServiceImpl implements RetrievalService {
 
     // ---------- 各阶段 ----------
 
-    private List<Document> denseSearch(String q, int n, RetrievalService.EntityHint filter) {
+    private List<Document> denseSearch(String q, int n, RetrievalService.EntityHint filter, Long kbId) {
         try {
-            Filter.Expression expr = buildFilter(filter);
+            Filter.Expression expr = buildFilter(filter, kbId);
             if (expr == null) {
                 return vectorStore.similaritySearch(SearchRequest.builder().query(q).topK(n).build());
             }
@@ -248,33 +256,45 @@ public class RetrievalServiceImpl implements RetrievalService {
         }
     }
 
-    /** 实体过滤 → Qdrant Filter.Expression（filename 优先；page 兜底）。构建失败返回 null（无过滤）。 */
-    private Filter.Expression buildFilter(RetrievalService.EntityHint filter) {
-        if (filter == null) {
+    /**
+     * 实体过滤 + 可选 kbId 预过滤（P9）→ Qdrant Filter.Expression（filename 优先；page 兜底）。
+     * kbId 预过滤默认关闭（旧向量 payload 无 kbId，开启会隐藏历史文档；开启前须全量重摄入），
+     * 当前稠密通道的正确性由 filterActiveDocuments 的 DB 后置过滤保证。构建失败返回 null（无过滤）。
+     */
+    private Filter.Expression buildFilter(RetrievalService.EntityHint filter, Long kbId) {
+        boolean kbPrefilter = props.isDenseFilterByKbid() && kbId != null;
+        if (filter == null && !kbPrefilter) {
             return null;
         }
         try {
             FilterExpressionBuilder b = new FilterExpressionBuilder();
-            if (filter.filename() != null && !filter.filename().isBlank()) {
-                return b.eq("filename", filter.filename()).build();
+            FilterExpressionBuilder.Op entityOp = null;
+            if (filter != null) {
+                if (filter.filename() != null && !filter.filename().isBlank()) {
+                    entityOp = b.eq("filename", filter.filename());
+                } else if (filter.page() != null) {
+                    entityOp = b.eq("page", filter.page());
+                }
             }
-            if (filter.page() != null) {
-                return b.eq("page", filter.page()).build();
+            FilterExpressionBuilder.Op kbOp = kbPrefilter ? b.eq("kbId", String.valueOf(kbId)) : null;
+            if (kbOp != null && entityOp != null) {
+                return b.and(kbOp, entityOp).build();
             }
+            return (kbOp != null ? kbOp : entityOp).build();
         } catch (Exception e) {
             log.warn("构建过滤条件失败，回退无过滤: {}", e.getMessage());
         }
         return null;
     }
 
-    private List<Document> keywordSearch(String q, int n, RetrievalService.EntityHint filter) {
+    private List<Document> keywordSearch(String q, int n, RetrievalService.EntityHint filter, Long kbId) {
         String kw = sanitizeKeyword(q);
         if (kw.isBlank()) {
             return List.of();
         }
         String filename = filter == null ? null : filter.filename();
         try {
-            return chunkMapper.keywordSearch(kw, n, filename).stream()
+            return chunkMapper.keywordSearch(kw, n, filename, kbId).stream()
                     .map(this::toDocument)
                     .toList();
         } catch (Exception e) {

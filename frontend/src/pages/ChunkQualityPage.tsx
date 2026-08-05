@@ -65,6 +65,8 @@ export default function ChunkQualityPage() {
   const [settingsMsg, setSettingsMsg] = useState('')
 
   const [rechunk, setRechunk] = useState<RechunkState | null>(null)
+  /** P9-5a：重切已入队（异步），记录文档 ID 驱动轮询，直到该文档处理完成 */
+  const [rechunkingDocId, setRechunkingDocId] = useState<string | null>(null)
 
   /** RAG 评测：A/B 两路结果（off=原样检索基线，on=查询处理管线）；withAnswer=是否含回答生成+LLM 裁判（慢） */
   const [evalProcessed, setEvalProcessed] = useState(true)
@@ -124,6 +126,29 @@ export default function ChunkQualityPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // P9-5a：异步重切后质量报告会滞后，每 3s 静默刷新直到该文档不再是 PENDING/PROCESSING
+  useEffect(() => {
+    if (!rechunkingDocId) return
+    const timer = window.setInterval(async () => {
+      try {
+        const r = await getQualityReport()
+        setReport(r.data)
+      } catch {
+        /* 静默：轮询下一轮 */
+      }
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [rechunkingDocId, report])
+
+  /** P9-5a：重切轮询到终态后清除标记 */
+  useEffect(() => {
+    if (!rechunkingDocId || !report) return
+    const doc = report.docs.find((d) => d.docId === rechunkingDocId)
+    if (doc && doc.status !== 'PENDING' && doc.status !== 'PROCESSING') {
+      setRechunkingDocId(null)
+    }
+  }, [report, rechunkingDocId])
+
   const saveSettings = async () => {
     const maxChunkChars = Number(settingsForm.maxChunkChars)
     const overlapChars = Number(settingsForm.overlapChars)
@@ -181,9 +206,12 @@ export default function ChunkQualityPage() {
     if (rechunk.semantic !== 'default') params.semantic = rechunk.semantic === 'true'
     setRechunk({ ...rechunk, saving: true, error: '' })
     try {
+      // P9-5a：重切已入队（异步），关闭弹窗后轮询直到该文档处理完成，期间展示"处理中"提示
       await rechunkDocument(rechunk.doc.docId, params)
+      const docId = rechunk.doc.docId
       setRechunk(null)
-      await load()
+      setRechunkingDocId(docId)
+      void load()
     } catch (e) {
       setRechunk({ ...rechunk, saving: false, error: e instanceof Error ? e.message : '重新切片失败' })
     }
@@ -330,6 +358,12 @@ export default function ChunkQualityPage() {
           </button>
         ))}
       </div>
+
+      {rechunkingDocId && (
+        <div className="flex items-center gap-2 text-sm text-blue-600 mb-3 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+          <span className="animate-pulse">⟳</span> 重新切片已提交，后台处理中…
+        </div>
+      )}
 
       {error && <div className="text-sm text-red-500 mb-3">⚠️ {error}</div>}
       {loading && <div className="text-sm text-slate-400 py-8">加载中…</div>}

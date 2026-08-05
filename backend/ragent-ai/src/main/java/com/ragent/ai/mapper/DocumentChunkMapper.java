@@ -24,15 +24,16 @@ public interface DocumentChunkMapper extends BaseMapper<DocumentChunk> {
             JOIN kb_document d ON d.id = dc.document_id AND d.deleted = 0 AND d.status = 'READY'
             WHERE MATCH(dc.content) AGAINST(#{keyword} IN NATURAL LANGUAGE MODE)
               AND (#{filename} IS NULL OR d.filename = #{filename})
+              AND (#{kbId} IS NULL OR d.kb_id = #{kbId})
             ORDER BY relevance DESC
             LIMIT #{limit}
             """)
     List<KeywordRow> keywordSearch(@Param("keyword") String keyword, @Param("limit") int limit,
-                                   @Param("filename") String filename);
+                                   @Param("filename") String filename, @Param("kbId") Long kbId);
 
-    /** 全库关键词检索（filename 过滤缺省） */
+    /** 全库关键词检索（filename/kbId 过滤缺省） */
     default List<KeywordRow> keywordSearch(String keyword, int limit) {
-        return keywordSearch(keyword, limit, null);
+        return keywordSearch(keyword, limit, null, null);
     }
 
     /**

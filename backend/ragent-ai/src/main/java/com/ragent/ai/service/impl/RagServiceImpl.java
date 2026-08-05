@@ -139,6 +139,12 @@ public class RagServiceImpl implements RagService {
     @Override
     public Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId,
                                                    QueryPipeline.ProcessedQuery precomputed) {
+        return ragStream(question, conversationId, userId, precomputed, null);
+    }
+
+    @Override
+    public Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId,
+                                                   QueryPipeline.ProcessedQuery precomputed, Long kbId) {
         long start = System.nanoTime();
         List<ChatMemoryService.ChatMessage> history = chatMemoryService.load(conversationId);
         // 统一对话路由已算过一次管线产物时复用（precomputed），否则按原逻辑自己跑（gateByIntent=true）
@@ -146,20 +152,21 @@ public class RagServiceImpl implements RagService {
                 ? precomputed : queryPipeline.run(question, history, true);
         if (pq.gated()) {
             // 意图门禁命中：非知识库问题，不检索，只给提示
-            recordQuery(userId, conversationId, question, pq, true, null, NON_RAG_HINT,
+            recordQuery(userId, conversationId, question, kbId, pq, true, null, NON_RAG_HINT,
                     (System.nanoTime() - start) / 1_000_000, null);
             return Flux.just(
                     sse("rewritten", rewrittenJson(pq)),
                     sse("content", NON_RAG_HINT));
         }
 
-        List<Document> docs = retrievalService.retrieve(toRetrievalQuery(pq), props.getTopK());
+        // P9：kbId=null 检索全部可见库，非空限定指定库（检索内部贯穿到关键词 SQL 与活跃文档后置过滤）
+        List<Document> docs = retrievalService.retrieve(toRetrievalQuery(pq, false, kbId), props.getTopK());
         String sourcesJson = sourcesJson(docs);
 
         // P8-1a：空召回硬门禁——不调用生成模型，直接返回提示语，杜绝"无依据编造"
         if (docs.isEmpty()) {
             String noHit = "知识库中未检索到相关内容，请换个问法，或确认该主题的文档已上传到知识库。";
-            recordQuery(userId, conversationId, question, pq, false, sourcesJson, noHit,
+            recordQuery(userId, conversationId, question, kbId, pq, false, sourcesJson, noHit,
                     (System.nanoTime() - start) / 1_000_000, null);
             return Flux.concat(
                     Flux.just(sse("rewritten", rewrittenJson(pq))),
@@ -183,7 +190,7 @@ public class RagServiceImpl implements RagService {
                             try {
                                 validateCitations(answer.toString(), docs.size());
                                 chatMemoryService.append(conversationId, question, answer.toString());
-                                recordQuery(userId, conversationId, question, pq, false, sourcesJson,
+                                recordQuery(userId, conversationId, question, kbId, pq, false, sourcesJson,
                                         answer.toString(), (System.nanoTime() - start) / 1_000_000, null);
                             } finally {
                                 if (ctx != null) {
@@ -196,7 +203,7 @@ public class RagServiceImpl implements RagService {
                                 RagentContext.set(ctx);
                             }
                             try {
-                                recordQuery(userId, conversationId, question, pq, false, sourcesJson,
+                                recordQuery(userId, conversationId, question, kbId, pq, false, sourcesJson,
                                         answer.toString(), (System.nanoTime() - start) / 1_000_000, shortMsg(e));
                             } finally {
                                 if (ctx != null) {
@@ -226,7 +233,7 @@ public class RagServiceImpl implements RagService {
     }
 
     /** 后台异步落库查询日志（受 ragent.retrieval.query-log-enabled 控制；异常仅告警） */
-    private void recordQuery(Long userId, String conversationId, String question,
+    private void recordQuery(Long userId, String conversationId, String question, Long kbId,
                              QueryPipeline.ProcessedQuery pq, boolean gated,
                              String sourcesJson, String answer, long latencyMs, String error) {
         if (!props.isQueryLogEnabled()) {
@@ -247,7 +254,7 @@ public class RagServiceImpl implements RagService {
             String traceId = RagentContext.current() == null ? null : RagentContext.current().traceId();
             queryLogService.recordAsync(new RagQueryLogService.QueryLogData(
                     userId, traceId, conversationId, question, pq.intent(), pq.rewrittenQuery(),
-                    gated, sourcesJson, answer, latencyMs, error));
+                    gated, sourcesJson, answer, latencyMs, error, kbId));
         } catch (Exception e) {
             log.warn("查询日志记录失败: {}", e.getMessage());
         }
@@ -267,10 +274,15 @@ public class RagServiceImpl implements RagService {
      * rerank 用改写句；实体过滤 filename/page。
      */
     private RetrievalService.RetrievalQuery toRetrievalQuery(QueryPipeline.ProcessedQuery pq) {
-        return toRetrievalQuery(pq, false);
+        return toRetrievalQuery(pq, false, null);
     }
 
     private RetrievalService.RetrievalQuery toRetrievalQuery(QueryPipeline.ProcessedQuery pq, boolean includeEval) {
+        return toRetrievalQuery(pq, includeEval, null);
+    }
+
+    private RetrievalService.RetrievalQuery toRetrievalQuery(QueryPipeline.ProcessedQuery pq, boolean includeEval,
+                                                             Long kbId) {
         String rewritten = pq.rewrittenQuery();
         List<String> variants = (pq.variants() == null || pq.variants().isEmpty())
                 ? List.of() : pq.variants();
@@ -298,7 +310,7 @@ public class RagServiceImpl implements RagService {
 
         RetrievalService.EntityHint filter = (pq.filename() != null || pq.page() != null)
                 ? new RetrievalService.EntityHint(pq.filename(), pq.page()) : null;
-        return new RetrievalService.RetrievalQuery(rewritten, dense, keyword, filter, includeEval);
+        return new RetrievalService.RetrievalQuery(rewritten, dense, keyword, filter, includeEval, kbId);
     }
 
     /** rewritten SSE 事件：intent + 改写后查询 + 各阶段轨迹（前端透明展示） */

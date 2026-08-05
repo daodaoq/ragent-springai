@@ -149,13 +149,14 @@ export async function streamAgent(
   await streamSSE('/api/ai/agent/stream', { message, conversationId }, handlers)
 }
 
-/** 统一对话流式（自动路由 RAG/Agent/普通对话）：先 mode 事件，再对应引擎事件 */
+/** 统一对话流式（自动路由 RAG/Agent/普通对话）：先 mode 事件，再对应引擎事件；kbId=指定知识库（null=全部） */
 export async function streamUnified(
   message: string,
   conversationId: string,
   handlers: StreamHandlers,
+  kbId?: string | null,
 ): Promise<void> {
-  await streamSSE('/api/ai/stream', { message, conversationId }, handlers)
+  await streamSSE('/api/ai/stream', { message, conversationId, ...(kbId ? { kbId } : {}) }, handlers)
 }
 
 /** 清空某会话的多轮记忆 */

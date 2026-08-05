@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { clearMemory, streamUnified, type RagSource, type RewrittenInfo } from '../api/ai'
 import http from '../api/http'
-import { getDocumentSource, type KbDocumentSource } from '../api/kb'
+import { getDocumentSource, listKbs, type KbDocumentSource, type KbInfo } from '../api/kb'
 import Markdown from '../components/Markdown'
 import type { ToolCallInfo } from '../types'
 
@@ -65,9 +65,19 @@ export default function ChatPage() {
   const [sourceFullError, setSourceFullError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  // P9：知识库选择（null = 检索全部可见库）
+  const [kbs, setKbs] = useState<KbInfo[]>([])
+  const [kbId, setKbId] = useState<string | null>(null)
+
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  useEffect(() => {
+    listKbs()
+      .then((res) => setKbs(res.data ?? []))
+      .catch(() => {}) // 取不到知识库列表时退化为全部库检索
+  }, [])
 
   const openSourceDetail = (s: RagSource) => {
     setSourceDetail(s)
@@ -140,7 +150,7 @@ export default function ChatPage() {
         onToolCall: (t) => updateLast((prev) => ({ tools: [...(prev.tools ?? []), t] })),
         onQueuePosition: (p) => setQueuePos(p),
         onRateLimited: () => setQueuePos(null),
-      })
+      }, kbId)
     } catch (e) {
       setQueuePos(null)
       updateLast({ content: '⚠️ ' + (e instanceof Error ? e.message : '连接失败') })
@@ -180,6 +190,22 @@ export default function ChatPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-lg font-bold text-slate-800">🤖 AI 助手</h1>
         <div className="flex items-center gap-2">
+          {kbs.length > 0 && (
+            <select
+              value={kbId ?? ''}
+              onChange={(e) => setKbId(e.target.value === '' ? null : e.target.value)}
+              disabled={streaming}
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-500 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+              title="选择检索的知识库（默认全部）"
+            >
+              <option value="">📚 全部知识库</option>
+              {kbs.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.name}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             onClick={clearConversation}
             disabled={streaming}

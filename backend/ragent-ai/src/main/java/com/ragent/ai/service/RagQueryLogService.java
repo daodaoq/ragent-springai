@@ -11,7 +11,7 @@ public interface RagQueryLogService {
     /** 一次查询的可记录数据 */
     record QueryLogData(Long userId, String traceId, String conversationId, String question, String intent,
                         String rewrittenQuery, boolean gated, String sourcesJson,
-                        String answer, long latencyMs, String error) {
+                        String answer, long latencyMs, String error, Long kbId) {
     }
 
     /** 后台异步写入（不阻塞调用方；队列满/写库失败仅告警，不影响问答） */

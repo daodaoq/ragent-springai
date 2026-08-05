@@ -20,6 +20,9 @@ public class KbDocument {
     @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
+    /** P9：所属知识库 ID（kb.id；null = 未迁移/未归属，检索按"全部库"处理） */
+    private Long kbId;
+
     private String filename;
 
     private String contentType;
@@ -43,11 +46,14 @@ public class KbDocument {
 
     private Integer chunkCount;
 
-    /** PENDING / READY / FAILED */
+    /** PENDING / PROCESSING / READY / FAILED */
     private String status;
 
     /** P8-6c：文档来源——UPLOAD(用户上传)/EVAL(评测注入)；生产检索只召回 UPLOAD，避免评测样例污染真实 KB */
     private String source;
+
+    /** P9-5a：最近一次处理失败原因（异步 worker 写 DLQ / 失败补偿时回填，前端 FAILED 徽章展示） */
+    private String errorMsg;
 
     @TableLogic
     private Integer deleted;

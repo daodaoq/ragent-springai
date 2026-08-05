@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import {
+  createKb,
   deleteDocument,
   deleteDocuments,
+  deleteKb,
   getDocumentSource,
   listChunks,
   listDocuments,
+  listKbs,
   retryDocument,
   uploadDocuments,
   type DocumentChunk,
   type KbDocument,
   type KbDocumentSource,
+  type KbInfo,
   type UploadConfig,
   type UploadResult,
 } from '../api/kb'
@@ -29,6 +33,14 @@ interface ParamEntry {
 
 export default function KnowledgeBasePage() {
   const { user } = useAuthStore()
+  // P9：知识库（共享池 + 分级管理）。全部登录可见；教师/管理员可新建/删除
+  const [kbs, setKbs] = useState<KbInfo[]>([])
+  const [selectedKbId, setSelectedKbId] = useState<string | null>(null)
+  const [createKbOpen, setCreateKbOpen] = useState(false)
+  const [createKbForm, setCreateKbForm] = useState({ name: '', description: '' })
+  const [createKbError, setCreateKbError] = useState('')
+  const [createKbSaving, setCreateKbSaving] = useState(false)
+  const canManageKb = user?.role === 'ADMIN' || user?.role === 'TEACHER'
   const [docs, setDocs] = useState<KbDocument[]>([])
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
@@ -73,12 +85,12 @@ export default function KnowledgeBasePage() {
 
   const load = useCallback(async () => {
     try {
-      const res = await listDocuments()
+      const res = await listDocuments(selectedKbId)
       setDocs(res.data)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
     }
-  }, [])
+  }, [selectedKbId])
 
   // 文档表客户端分页（列表每次全量返回，前端切片展示）
   const docPaging = usePagination(docs, 10)
@@ -88,7 +100,18 @@ export default function KnowledgeBasePage() {
     getChunkSettings()
       .then((res) => setGlobalParams(res.data))
       .catch(() => {}) // 取不到全局设置时用默认值兜底
+    listKbs()
+      .then((res) => setKbs(res.data ?? []))
+      .catch(() => {}) // 取不到知识库列表时退化为单库视图
   }, [load])
+
+  // P9-5a：异步处理后文档先 PENDING/PROCESSING，每 3s 轮询刷新状态，全部终态后自动停
+  const hasProcessing = docs.some((d) => d.status === 'PENDING' || d.status === 'PROCESSING')
+  useEffect(() => {
+    if (!hasProcessing) return
+    const timer = window.setInterval(() => void load(), 3000)
+    return () => window.clearInterval(timer)
+  }, [hasProcessing, load])
 
   if (!user) return <Navigate to="/login" replace />
 
@@ -164,7 +187,7 @@ export default function KnowledgeBasePage() {
             if (p.semantic !== 'default') c.semantic = p.semantic === 'true'
             return c
           })
-        const res = await uploadDocuments(batch, configs)
+        const res = await uploadDocuments(batch, configs, selectedKbId)
         allResults.push(...res.data)
         setUploadProgress({ done: Math.min(i + batch.length, list.length), total: list.length })
       }
@@ -174,11 +197,12 @@ export default function KnowledgeBasePage() {
         setUploadErrors(failed.map((r) => ({ filename: r.filename, message: r.message ?? '未知错误' })))
         setError(`成功 ${allResults.length - failed.length}/${allResults.length} 个，失败 ${failed.length} 个`)
       } else {
+        const submitted = allResults.filter((r) => r.success).length
         const overwrote = allResults.filter((r) => r.success && overwriteNames.includes(r.filename)).length
         const tips: string[] = []
-        if (overwrote > 0) tips.push(`${overwrote} 个覆盖了旧版本`)
+        if (overwrote > 0) tips.push(`${overwrote} 个将覆盖旧版本`)
         if (skippedCount > 0) tips.push(`跳过 ${skippedCount} 个已存在文件`)
-        if (tips.length > 0) setNotice(`上传完成：${tips.join('，')}`)
+        setNotice(`已提交 ${submitted} 个文档（后台处理中）${tips.length > 0 ? '：' + tips.join('，') : ''}`)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '上传失败')
@@ -277,6 +301,63 @@ export default function KnowledgeBasePage() {
     })
   }
 
+  /** P9：kbId → 库名（未知/未归属回退「默认知识库」） */
+  const kbName = (id: string | null | undefined) =>
+    kbs.find((k) => k.id === id)?.name ?? '默认知识库'
+
+  const handleDeleteKb = () => {
+    const kb = kbs.find((k) => k.id === selectedKbId)
+    if (!kb) return
+    if (kb.isDefault) {
+      setError('默认知识库不可删除')
+      return
+    }
+    if (kb.docCount > 0) {
+      setError(`该知识库下还有 ${kb.docCount} 个文档，请先删除文档后再删除知识库`)
+      return
+    }
+    setConfirmState({
+      title: '删除知识库',
+      message: `确定删除知识库「${kb.name}」？`,
+      confirmText: '删除',
+      onConfirm: async () => {
+        try {
+          await deleteKb(kb.id)
+          setSelectedKbId(null)
+          await load()
+          const res = await listKbs()
+          setKbs(res.data ?? [])
+        } catch (err) {
+          setError(err instanceof Error ? err.message : '删除失败')
+        } finally {
+          setConfirmState(null)
+        }
+      },
+    })
+  }
+
+  const submitCreateKb = async () => {
+    const name = createKbForm.name.trim()
+    if (!name) {
+      setCreateKbError('请输入知识库名称')
+      return
+    }
+    setCreateKbSaving(true)
+    setCreateKbError('')
+    try {
+      const kb = await createKb(name, createKbForm.description.trim() || undefined)
+      // create 返回 Kb 实体（无 docCount），补 0 以便下拉展示
+      setKbs((prev) => [...prev, { ...kb.data, docCount: 0 }])
+      setSelectedKbId(kb.data.id)
+      setCreateKbOpen(false)
+      await load()
+    } catch (err) {
+      setCreateKbError(err instanceof Error ? err.message : '创建失败')
+    } finally {
+      setCreateKbSaving(false)
+    }
+  }
+
   const loadChunks = async (docId: string, page: number) => {
     setChunkLoading(true)
     setChunkError('')
@@ -323,7 +404,7 @@ export default function KnowledgeBasePage() {
           {uploading && uploadProgress && (
             <div className="flex items-center gap-2">
               <span className="text-sm text-slate-400">
-                正在处理文档 {uploadProgress.done}/{uploadProgress.total}（切分+向量化）
+                已提交 {uploadProgress.done}/{uploadProgress.total} 个（后台处理中）
               </span>
               <div className="w-32 h-1.5 bg-slate-200 rounded-full overflow-hidden">
                 <div
@@ -342,6 +423,51 @@ export default function KnowledgeBasePage() {
           </button>
           <input ref={fileRef} type="file" accept=".md,.txt,.pdf,.docx,.doc,.xlsx,.pptx,.rtf" multiple className="hidden" onChange={handleUpload} />
         </div>
+      </div>
+
+      {/* P9：知识库过滤 + 管理（共享池：全部可见；教师/管理员可新建/删除） */}
+      <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        <select
+          value={selectedKbId ?? ''}
+          onChange={(e) => {
+            setSelectedKbId(e.target.value === '' ? null : e.target.value)
+            setSelected(new Set())
+          }}
+          className="text-sm border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          title="按知识库过滤文档；聊天页也可选择检索范围"
+        >
+          <option value="">全部知识库（{kbs.reduce((s, k) => s + k.docCount, 0)} 文档）</option>
+          {kbs.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.name}（{k.docCount}）
+            </option>
+          ))}
+        </select>
+        {canManageKb && (
+          <>
+            <button
+              onClick={() => {
+                setCreateKbOpen(true)
+                setCreateKbForm({ name: '', description: '' })
+                setCreateKbError('')
+              }}
+              className="text-sm px-2.5 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              + 新建知识库
+            </button>
+            {selectedKbId && (
+              <button
+                onClick={handleDeleteKb}
+                className="text-sm px-2.5 py-1.5 rounded-lg text-red-500 border border-red-200 hover:bg-red-50"
+              >
+                删除该库
+              </button>
+            )}
+          </>
+        )}
+        <span className="ml-auto text-xs text-slate-400">
+          上传文档将归入「{selectedKbId ? kbName(selectedKbId) : '全部/默认知识库'}」
+        </span>
       </div>
 
       {error && (
@@ -405,6 +531,7 @@ export default function KnowledgeBasePage() {
                 <th className="px-4 py-3 font-medium">文件名</th>
                 <th className="px-4 py-3 font-medium">切片数</th>
                 <th className="px-4 py-3 font-medium">大小</th>
+                <th className="px-4 py-3 font-medium">知识库</th>
                 <th className="px-4 py-3 font-medium">状态</th>
                 <th className="px-4 py-3 font-medium">上传时间</th>
                 <th className="px-4 py-3 font-medium"></th>
@@ -424,11 +551,18 @@ export default function KnowledgeBasePage() {
                   <td className="px-4 py-3 text-slate-700">{d.filename}</td>
                   <td className="px-4 py-3 text-slate-500">{d.chunkCount}</td>
                   <td className="px-4 py-3 text-slate-500">{(d.size / 1024).toFixed(1)} KB</td>
+                  <td className="px-4 py-3 text-slate-500">{kbName(d.kbId)}</td>
                   <td className="px-4 py-3">
                     {d.status === 'READY' ? (
                       <span className="px-2 py-0.5 rounded-full text-xs bg-green-50 text-green-600">可用</span>
                     ) : d.status === 'FAILED' ? (
-                      <span className="px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-500">处理失败</span>
+                      <span title={d.errorMsg ?? undefined} className="px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-500 cursor-help">
+                        处理失败
+                      </span>
+                    ) : d.status === 'PROCESSING' ? (
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-600 animate-pulse">处理中</span>
+                    ) : d.status === 'PENDING' ? (
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-yellow-50 text-yellow-600">排队中</span>
                     ) : (
                       <span className="px-2 py-0.5 rounded-full text-xs bg-yellow-50 text-yellow-600">{d.status}</span>
                     )}
@@ -745,6 +879,59 @@ export default function KnowledgeBasePage() {
                   {source?.text}
                 </pre>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {createKbOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+          onClick={() => setCreateKbOpen(false)}
+        >
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-slate-200">
+              <h2 className="font-bold text-slate-800">📚 新建知识库</h2>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">名称 *</label>
+                <input
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={createKbForm.name}
+                  maxLength={100}
+                  onChange={(e) => setCreateKbForm((s) => ({ ...s, name: e.target.value }))}
+                  placeholder="如：深度学习"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">描述</label>
+                <textarea
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={createKbForm.description}
+                  rows={2}
+                  maxLength={500}
+                  onChange={(e) => setCreateKbForm((s) => ({ ...s, description: e.target.value }))}
+                  placeholder="这个知识库的用途说明"
+                />
+              </div>
+              {createKbError && <div className="text-sm text-red-500">⚠️ {createKbError}</div>}
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-200">
+              <button
+                onClick={() => setCreateKbOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-slate-500 text-sm hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={submitCreateKb}
+                disabled={createKbSaving}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+              >
+                {createKbSaving ? '创建中…' : '创建'}
+              </button>
             </div>
           </div>
         </div>

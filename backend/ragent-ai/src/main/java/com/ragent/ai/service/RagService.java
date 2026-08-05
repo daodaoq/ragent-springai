@@ -46,6 +46,10 @@ public interface RagService {
     Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId,
                                             QueryPipeline.ProcessedQuery precomputed);
 
+    /** P9：指定知识库检索的流式接口。kbId=null 检索全部可见库；非空限定指定库。 */
+    Flux<ServerSentEvent<String>> ragStream(String question, String conversationId, Long userId,
+                                            QueryPipeline.ProcessedQuery precomputed, Long kbId);
+
     record SourceItem(int idx, String filename, String excerpt, Double score,
                       String headingPath, Integer lineStart, Integer lineEnd, Integer page,
                       String documentId, String content) {

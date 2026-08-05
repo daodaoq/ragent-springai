@@ -40,7 +40,7 @@ public class AiChatController {
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> stream(@RequestBody ChatRequest request) {
         return unifiedChatService.stream(request.message() == null ? "" : request.message(),
-                request.conversationId(), currentUserId());
+                request.conversationId(), currentUserId(), request.kbId());
     }
 
     /** 普通对话流式（P5 起带多轮记忆；保留向后兼容） */
@@ -56,7 +56,7 @@ public class AiChatController {
     public Flux<ServerSentEvent<String>> ragStream(@RequestBody ChatRequest request) {
         String message = request.message() == null ? "" : request.message();
         return rateLimited(() -> busySse(),
-                () -> ragService.ragStream(message, request.conversationId(), currentUserId()));
+                () -> ragService.ragStream(message, request.conversationId(), currentUserId(), null, request.kbId()));
     }
 
     /** 当前登录用户 ID（RAG 端点公开可访问，未登录返回 null；仅用于查询日志归属） */
@@ -107,6 +107,7 @@ public class AiChatController {
         return Result.success();
     }
 
-    public record ChatRequest(String message, String conversationId) {
+    /** kbId：P9 指定知识库检索（null = 全部可见库；仅 RAG 意图生效） */
+    public record ChatRequest(String message, String conversationId, Long kbId) {
     }
 }

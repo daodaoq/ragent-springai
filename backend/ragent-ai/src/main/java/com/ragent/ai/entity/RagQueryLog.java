@@ -50,6 +50,9 @@ public class RagQueryLog {
     /** 异常信息（若失败） */
     private String error;
 
+    /** P9：本次检索限定的知识库 ID（null = 全部库） */
+    private Long kbId;
+
     /** 创建时间（DB 端 DEFAULT CURRENT_TIMESTAMP 维护） */
     private LocalDateTime createdAt;
 }

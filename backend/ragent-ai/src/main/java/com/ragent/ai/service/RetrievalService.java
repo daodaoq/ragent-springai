@@ -17,18 +17,26 @@ public interface RetrievalService {
 
     /**
      * 检索规格：rerankQuery 用于重排；denseQueries/keywordQueries 为各自通道的查询列表（每路一条 ranked list）；
-     * filter 为实体过滤；includeEval=true 时允许召回评测注入文档（仅评测程序用，生产路径恒为 false）。
+     * filter 为实体过滤；includeEval=true 时允许召回评测注入文档（仅评测程序用，生产路径恒为 false）；
+     * kbId=null 表示检索全部可见库（等价改造前行为），非空表示限定指定知识库。
      * 单查询等价于 {@link #single(String)}。
      */
     record RetrievalQuery(String rerankQuery,
                           List<String> denseQueries,
                           List<String> keywordQueries,
                           EntityHint filter,
-                          boolean includeEval) {
+                          boolean includeEval,
+                          Long kbId) {
 
-        /** 单查询、无过滤、不含评测文档（等价于改造前的行为） */
+        /** 兼容旧 5 参构造（kbId=null = 全部库） */
+        public RetrievalQuery(String rerankQuery, List<String> denseQueries, List<String> keywordQueries,
+                              EntityHint filter, boolean includeEval) {
+            this(rerankQuery, denseQueries, keywordQueries, filter, includeEval, null);
+        }
+
+        /** 单查询、无过滤、不含评测文档、全部库（等价于改造前的行为） */
         public static RetrievalQuery single(String q) {
-            return new RetrievalQuery(q, List.of(q), List.of(q), null, false);
+            return new RetrievalQuery(q, List.of(q), List.of(q), null, false, null);
         }
     }
 

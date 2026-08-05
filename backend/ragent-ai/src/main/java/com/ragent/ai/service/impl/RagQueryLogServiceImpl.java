@@ -48,6 +48,7 @@ public class RagQueryLogServiceImpl implements RagQueryLogService {
                     e.setAnswer(d.answer());
                     e.setLatencyMs((int) d.latencyMs());
                     e.setError(d.error());
+                    e.setKbId(d.kbId());
                     mapper.insert(e);
                 } catch (Exception ex) {
                     log.warn("写入查询日志失败: {}", ex.getMessage());

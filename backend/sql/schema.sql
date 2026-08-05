@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS `question_tag` (
 -- ============================================
 CREATE TABLE IF NOT EXISTS `kb_document` (
   `id`           BIGINT       NOT NULL COMMENT '主键(雪花ID)',
+  `kb_id`        BIGINT       DEFAULT NULL COMMENT '所属知识库ID(kb.id；NULL=未归属)',
   `filename`     VARCHAR(255) NOT NULL COMMENT '文件名',
   `content_type` VARCHAR(100) DEFAULT NULL COMMENT '文件类型',
   `size`         INT          NOT NULL DEFAULT 0 COMMENT '字节数',
@@ -82,13 +83,15 @@ CREATE TABLE IF NOT EXISTS `kb_document` (
   `chunk_overlap_chars` INT  DEFAULT NULL COMMENT '切片参数覆盖: 重叠字符数(NULL=全局默认)',
   `chunk_semantic`      TINYINT DEFAULT NULL COMMENT '切片参数覆盖: 语义分片(NULL=全局默认)',
   `chunk_count`  INT          NOT NULL DEFAULT 0 COMMENT '切片数',
-  `status`       VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING/READY/FAILED',
+  `status`       VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING/PROCESSING/READY/FAILED',
   `source`       VARCHAR(20)  NOT NULL DEFAULT 'UPLOAD' COMMENT '文档来源: UPLOAD/EVAL(评测注入，生产检索排除)',
+  `error_msg`    VARCHAR(1000) DEFAULT NULL COMMENT '最近一次处理失败原因(P9-5a 异步 worker 回填)',
   `deleted`      TINYINT      NOT NULL DEFAULT 0,
   `created_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_created_at` (`created_at`)
+  KEY `idx_created_at` (`created_at`),
+  KEY `idx_kb_id` (`kb_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文档表';
 
 -- 全局切片参数设置（单行；前端可改，per-doc 覆盖优先级更高）
@@ -117,6 +120,46 @@ CREATE TABLE IF NOT EXISTS `document_chunk` (
   PRIMARY KEY (`id`),
   KEY `idx_document_id` (`document_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库切片表';
+
+-- ============================================
+-- P9: 知识库（多知识库：共享池 + 分级管理）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `kb` (
+  `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键(自增；1 保留默认库)',
+  `name`        VARCHAR(100) NOT NULL COMMENT '知识库名称',
+  `description` VARCHAR(500) DEFAULT NULL COMMENT '描述',
+  `owner_id`    BIGINT       DEFAULT NULL COMMENT '创建人(sys_user.id，仅记录用)',
+  `is_default`  TINYINT      NOT NULL DEFAULT 0 COMMENT '默认库: 1=是(历史/评测文档归此，不可删除)',
+  `deleted`     TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除: 0否 1是',
+  `created_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_name` (`name`),
+  KEY `idx_owner_id` (`owner_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库';
+
+INSERT INTO `kb` (`id`, `name`, `description`, `is_default`, `created_at`, `updated_at`)
+SELECT 1, '默认知识库', '系统默认知识库：历史文档与评测文档归入此库', 1, NOW(), NOW()
+WHERE NOT EXISTS (SELECT 1 FROM `kb` WHERE `is_default` = 1);
+
+-- ============================================
+-- P9: 异步摄入任务队列（上传/重切/重试 统一入队，worker 消费；重试/DLQ）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `ingest_task` (
+  `id`           BIGINT        NOT NULL COMMENT '主键(雪花ID)',
+  `document_id`  BIGINT        NOT NULL COMMENT '关联 kb_document.id',
+  `task_type`    VARCHAR(20)   NOT NULL COMMENT '任务类型: UPLOAD/RECHUNK/RETRY',
+  `status`       VARCHAR(20)   NOT NULL DEFAULT 'QUEUED' COMMENT '状态: QUEUED/RUNNING/SUCCESS/FAILED/DLQ/CANCELLED',
+  `attempt`      INT           NOT NULL DEFAULT 0 COMMENT '已尝试次数',
+  `max_attempts` INT           NOT NULL DEFAULT 3 COMMENT '最大尝试次数(超限进 DLQ)',
+  `last_error`   VARCHAR(1000) DEFAULT NULL COMMENT '最近一次失败原因',
+  `trace_id`     VARCHAR(64)   DEFAULT NULL COMMENT '入队时请求 traceId(worker 恢复 MDC 用)',
+  `created_at`   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_status_id` (`status`, `id`),
+  KEY `idx_document_id` (`document_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库异步处理任务表';
 
 -- ============================================
 -- P5: AI 回答反馈表（赞/踩）
@@ -163,6 +206,7 @@ CREATE TABLE IF NOT EXISTS `rag_query_log` (
   `answer`          MEDIUMTEXT   DEFAULT NULL COMMENT 'AI回答',
   `latency_ms`      INT          DEFAULT NULL COMMENT '总耗时ms',
   `error`           VARCHAR(500) DEFAULT NULL COMMENT '异常信息(若失败)',
+  `kb_id`           BIGINT       DEFAULT NULL COMMENT '本次检索限定的知识库ID(NULL=全部库)',
   `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_created_at` (`created_at`),

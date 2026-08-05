@@ -46,34 +46,34 @@ public class UnifiedChatServiceImpl implements UnifiedChatService {
     private final RateLimitProperties rateLimitProps;
 
     @Override
-    public Flux<ServerSentEvent<String>> stream(String question, String conversationId, Long userId) {
+    public Flux<ServerSentEvent<String>> stream(String question, String conversationId, Long userId, Long kbId) {
         String q = question == null ? "" : question;
         if (!rateLimitProps.isEnabled()) {
-            return engine(q, conversationId, userId);
+            return engine(q, conversationId, userId, kbId);
         }
         String baseKey = rateLimitProps.getQueueKey();
         RedisRateLimiter.Attempt attempt = rateLimiter.acquire(baseKey);
         return switch (attempt.result()) {
             // P8-4a：engine 内部含意图 LLM 调用与 RAG 检索（JDBC+gRPC+rerank 可达 30s），
             // 必须 Flux.defer + subscribeOn(boundedElastic)，否则在 Netty 事件循环线程上同步执行
-            case 1 -> Flux.defer(() -> engine(q, conversationId, userId))
+            case 1 -> Flux.defer(() -> engine(q, conversationId, userId, kbId))
                     .subscribeOn(Schedulers.boundedElastic())
                     .doFinally(sig -> rateLimiter.release(attempt.reqId(), baseKey));
             case -1 -> rejected(rateLimiter.reason(attempt.reqId()));
-            default -> queued(attempt, q, conversationId, userId);
+            default -> queued(attempt, q, conversationId, userId, kbId);
         };
     }
 
     /** 排队中的 SSE 流：先报初始位次，收到 admitted 后切到真实引擎；超时/队列满被拒则 rate-limited。 */
     private Flux<ServerSentEvent<String>> queued(RedisRateLimiter.Attempt attempt, String q,
-                                                 String conversationId, Long userId) {
+                                                 String conversationId, Long userId, Long kbId) {
         String baseKey = rateLimitProps.getQueueKey();
         String reqId = attempt.reqId();
         Flux<ServerSentEvent<String>> status = rateLimiter.queueEvents(reqId, baseKey)
                 .concatMap(ev -> {
                     if (QueueEvent.ADMITTED.equals(ev.type())) {
                         // P8-4a：defer 延迟到订阅时才执行 engine（内部含 LLM/检索阻塞调用），移到 boundedElastic
-                        return Flux.defer(() -> engine(q, conversationId, userId))
+                        return Flux.defer(() -> engine(q, conversationId, userId, kbId))
                                 .subscribeOn(Schedulers.boundedElastic());
                     }
                     if (QueueEvent.REJECTED.equals(ev.type())) {
@@ -95,7 +95,7 @@ public class UnifiedChatServiceImpl implements UnifiedChatService {
     }
 
     /** 意图路由引擎（无排队语义，纯分发）。 */
-    private Flux<ServerSentEvent<String>> engine(String q, String conversationId, Long userId) {
+    private Flux<ServerSentEvent<String>> engine(String q, String conversationId, Long userId, Long kbId) {
         List<ChatMemoryService.ChatMessage> history = chatMemoryService.load(conversationId);
         QueryPipeline.ProcessedQuery pq = queryPipeline.run(q, history, false);
         String intent = pq.intent() == null ? "RAG" : pq.intent().toUpperCase();
@@ -106,9 +106,9 @@ public class UnifiedChatServiceImpl implements UnifiedChatService {
             case "CHAT", "OTHER" -> Flux.concat(
                     Flux.just(mode("chat")),
                     chatService.stream(q, conversationId).map(c -> sse("content", c)));
-            default -> Flux.concat( // RAG 或未知意图：兜底走知识库检索
+            default -> Flux.concat( // RAG 或未知意图：兜底走知识库检索（P9：kbId 限定检索范围）
                     Flux.just(mode("rag")),
-                    ragService.ragStream(q, conversationId, userId, pq));
+                    ragService.ragStream(q, conversationId, userId, pq, kbId));
         };
     }
 

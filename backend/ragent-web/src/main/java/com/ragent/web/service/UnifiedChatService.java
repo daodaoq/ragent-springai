@@ -13,6 +13,7 @@ public interface UnifiedChatService {
      * 统一流式接口：先发 mode 事件（rag/chat/agent），再委托对应引擎的 SSE 事件流。
      *
      * @param userId 登录用户 ID（未登录为 null），透传给 RAG 用于查询日志归属
+     * @param kbId   限定的知识库 ID（null = 检索全部可见库；仅 RAG 意图生效）
      */
-    Flux<ServerSentEvent<String>> stream(String question, String conversationId, Long userId);
+    Flux<ServerSentEvent<String>> stream(String question, String conversationId, Long userId, Long kbId);
 }

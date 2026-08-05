@@ -3,16 +3,23 @@ package com.ragent.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.ragent.ai.config.ChunkingProperties;
+import com.ragent.ai.config.IngestProperties;
 import com.ragent.ai.entity.DocumentChunk;
+import com.ragent.ai.entity.IngestTask;
 import com.ragent.ai.entity.KbChunkSettings;
 import com.ragent.ai.entity.KbDocument;
 import com.ragent.ai.mapper.DocumentChunkMapper;
+import com.ragent.ai.mapper.IngestTaskMapper;
 import com.ragent.ai.mapper.KbChunkSettingsMapper;
 import com.ragent.ai.mapper.KbDocumentMapper;
 import com.ragent.ai.service.AiRetry;
 import com.ragent.ai.service.ChunkingService;
+import com.ragent.ai.service.KbService;
 import com.ragent.ai.service.KnowledgeBaseService;
 import com.ragent.ai.service.RetrievalService;
+import com.ragent.ai.service.ingest.KbFilenameLock;
+import com.ragent.common.context.RagentContext;
+import com.ragent.common.context.RagentThreadPools;
 import com.ragent.common.exception.BusinessException;
 import com.ragent.common.exception.ErrorCode;
 import com.ragent.common.result.PageResult;
@@ -34,7 +41,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import com.ragent.common.context.RagentThreadPools;
 
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -76,20 +82,19 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     private final KbDocumentMapper kbDocumentMapper;
     private final DocumentChunkMapper documentChunkMapper;
     private final KbChunkSettingsMapper chunkSettingsMapper;
+    private final IngestTaskMapper ingestTaskMapper;
     private final VectorStore vectorStore;
     private final ChunkingService chunkingService;
     private final MinioStorageService minioStorage;
     private final DocumentTextExtractor textExtractor;
     private final ChunkingProperties chunkingProps;
+    private final IngestProperties ingestProps;
     private final RetrievalService retrievalService;
+    private final KbFilenameLock kbFilenameLock;
+    private final KbService kbService;
 
     @Override
-    public KbDocument upload(MultipartFile file) {
-        return upload(file, null);
-    }
-
-    @Override
-    public KbDocument upload(MultipartFile file, ChunkParams params) {
+    public KbDocument enqueueUpload(MultipartFile file, ChunkParams params, Long kbId) {
         if (file == null || file.isEmpty()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "文件不能为空");
         }
@@ -131,33 +136,62 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         doc.setSize(bytes.length);
         doc.setStatus("PENDING");
         doc.setFileHash(newHash); // 内容哈希：同名文件判断是否真改内容、变更检测
+        // P9：归属知识库——未指定用默认库；并校验库存在（避免文档挂到不存在的库上）
+        Long targetKb = kbId != null ? kbId : kbService.getDefaultKbId();
+        if (targetKb != null) {
+            kbService.requireById(targetKb);
+            doc.setKbId(targetKb);
+        }
         applyChunkParams(doc, params); // 上传携带的切片参数覆盖（null 字段不动）
         kbDocumentMapper.insert(doc);
 
-        // 先落 MinIO 再处理：即使后续向量化失败，原始文件也已保存，可直接重试而无需重新上传
+        // 先落 MinIO 再入队：即使后续处理失败，原始文件也已保存，可直接重试而无需重新上传
         String objectKey = "kb/" + doc.getId() + "/" + sanitizeFilename(filename);
         try {
             minioStorage.put(objectKey, bytes, file.getContentType());
         } catch (Exception e) {
             doc.setStatus("FAILED");
+            doc.setErrorMsg(friendlyError(e.getMessage()));
             kbDocumentMapper.updateById(doc);
             throw e;
         }
         doc.setObjectKey(objectKey);
         kbDocumentMapper.updateById(doc);
 
-        // P8-5b：两阶段替换——新文档处理成功后才删旧文档。
-        // 之前是"先删旧文档再处理新文档"，新文档处理失败时旧文档已丢（覆盖即丢数据）。
-        // 现在处理期间旧文档保持 READY 可检索，新文档 READY 后再删除旧文档，失败则旧文档原样保留。
-        KbDocument result = process(doc, bytes);
-        if (exist != null) {
-            delete(exist.getId());
+        // P9-5a 异步化：真正的解析/切分/向量化交给 ingest_task 队列 worker。
+        // 两阶段替换（新文档 READY 后删旧同名文档）移入 processDocument（worker 在文件名锁内串行执行）。
+        enqueue(IngestTask.TYPE_UPLOAD, doc.getId());
+        return doc;
+    }
+
+    /** 写一条入队任务；失败时把文档置 FAILED（防 PENDING 无任务卡死），并上抛。 */
+    private void enqueue(String taskType, Long documentId) {
+        IngestTask task = new IngestTask();
+        task.setDocumentId(documentId);
+        task.setTaskType(taskType);
+        task.setStatus(IngestTask.STATUS_QUEUED);
+        task.setAttempt(0);
+        task.setMaxAttempts(ingestProps.getMaxAttempts());
+        RagentContext ctx = RagentContext.current();
+        if (ctx != null) {
+            task.setTraceId(ctx.traceId());
         }
-        return result;
+        try {
+            ingestTaskMapper.insert(task);
+        } catch (Exception e) {
+            log.error("摄取任务入队失败: docId={} type={}", documentId, taskType, e);
+            KbDocument doc = kbDocumentMapper.selectById(documentId);
+            if (doc != null) {
+                doc.setStatus("FAILED");
+                doc.setErrorMsg("任务入队失败");
+                kbDocumentMapper.updateById(doc);
+            }
+            throw e;
+        }
     }
 
     @Override
-    public KbDocument retry(Long id) {
+    public KbDocument enqueueRetry(Long id) {
         KbDocument doc = kbDocumentMapper.selectById(id);
         if (doc == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "文档不存在");
@@ -168,35 +202,33 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         if (doc.getObjectKey() == null || doc.getObjectKey().isBlank()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "该文档未保存原始文件（旧数据），请删除后重新上传");
         }
-        byte[] bytes = minioStorage.get(doc.getObjectKey());
-
-        // 清理上次失败留下的切片和向量，避免重试后数据重复
-        cleanupChunksAndVectors(id);
-
+        // 异步化：只入队；worker 的 processDocument(RETRY) 会先清旧切片/向量再重跑
         doc.setStatus("PENDING");
+        doc.setErrorMsg(null);
         doc.setChunkCount(0);
         kbDocumentMapper.updateById(doc);
-        log.info("重试文档处理: {} (id={})", doc.getFilename(), id);
-        return process(doc, bytes);
+        log.info("重试文档处理已入队: {} (id={})", doc.getFilename(), id);
+        enqueue(IngestTask.TYPE_RETRY, id);
+        return doc;
     }
 
     /** 便捷重载（无参数覆盖），接口只声明带 params 的版本 */
-    public List<UploadResult> uploadBatch(List<MultipartFile> files) {
-        return uploadBatch(files, null);
+    public List<UploadResult> enqueueUploadBatch(List<MultipartFile> files) {
+        return enqueueUploadBatch(files, null, null);
     }
 
     @Override
-    public List<UploadResult> uploadBatch(List<MultipartFile> files, List<ChunkParams> params) {
+    public List<UploadResult> enqueueUploadBatch(List<MultipartFile> files, List<ChunkParams> params, Long kbId) {
         if (files == null || files.isEmpty()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择要上传的文件");
         }
-        // 有界线程池并行处理多个文件：文件间多线程，文件内嵌入按 10 条/批串行调用，
-        // 单个文件失败只在结果里标记，不影响其他文件入库。
+        // P9-5a：有界线程池并行"快速入队"（校验+落 MinIO+写任务表，秒回）；
+        // 真正的解析/切分/向量化由异步队列 worker 消费。单文件入队失败只在结果里标记。
         List<Future<UploadResult>> futures = new ArrayList<>(files.size());
         for (int i = 0; i < files.size(); i++) {
             MultipartFile file = files.get(i);
             ChunkParams p = (params != null && i < params.size()) ? params.get(i) : null;
-            futures.add(UPLOAD_EXECUTOR.submit(() -> safeUpload(file, p)));
+            futures.add(UPLOAD_EXECUTOR.submit(() -> safeEnqueue(file, p, kbId)));
         }
         List<UploadResult> results = new ArrayList<>(futures.size());
         for (Future<UploadResult> future : futures) {
@@ -206,24 +238,24 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 Thread.currentThread().interrupt();
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "批量上传被中断");
             } catch (ExecutionException e) {
-                // safeUpload 已吞掉所有异常，这里仅兜底
+                // safeEnqueue 已吞掉所有异常，这里仅兜底
                 Throwable cause = e.getCause();
                 results.add(new UploadResult("未知文件", false,
-                        friendlyError(cause == null ? e.getMessage() : cause.getMessage())));
+                        friendlyError(cause == null ? e.getMessage() : cause.getMessage()), null));
             }
         }
         return results;
     }
 
-    /** 单文件上传的异常隔离：任何失败都转成结果对象，不让线程池任务抛异常 */
-    private UploadResult safeUpload(MultipartFile file, ChunkParams params) {
+    /** 单文件入队的异常隔离：任何失败都转成结果对象，不让线程池任务抛异常 */
+    private UploadResult safeEnqueue(MultipartFile file, ChunkParams params, Long kbId) {
         String filename = file.getOriginalFilename();
         try {
-            upload(file, params);
-            return new UploadResult(filename, true, null);
+            KbDocument doc = enqueueUpload(file, params, kbId);
+            return new UploadResult(filename, true, null, doc.getId());
         } catch (Exception e) {
-            log.warn("批量上传单个文件失败: {} - {}", filename, e.getMessage());
-            return new UploadResult(filename, false, friendlyError(e.getMessage()));
+            log.warn("批量上传单个文件入队失败: {} - {}", filename, e.getMessage());
+            return new UploadResult(filename, false, friendlyError(e.getMessage()), null);
         }
     }
 
@@ -259,6 +291,11 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     @Override
     public KbDocument uploadTextIfAbsent(String filename, String text) {
+        // 评测注入与异步 worker 可能处理同名文件，加锁串行避免互删/重复处理竞态
+        return kbFilenameLock.runWithLock(filename, () -> uploadTextIfAbsentLocked(filename, text));
+    }
+
+    private KbDocument uploadTextIfAbsentLocked(String filename, String text) {
         KbDocument exist = findLatestByFilename(filename);
         if (exist != null && "READY".equals(exist.getStatus())) {
             return exist;
@@ -273,6 +310,11 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         doc.setSize(bytes.length);
         doc.setStatus("PENDING");
         doc.setFileHash(sha256Hex(bytes));
+        // P9：评测注入文档归默认库（迁移未执行时 kbId=null，评测走 includeEval 全库召回不受影响）
+        Long defaultKb = kbService.getDefaultKbId();
+        if (defaultKb != null) {
+            doc.setKbId(defaultKb);
+        }
         kbDocumentMapper.insert(doc);
         // 同样落 MinIO：评测注入的文档也能在知识库「查看原文」
         String objectKey = "kb/" + doc.getId() + "/" + sanitizeFilename(filename);
@@ -303,9 +345,16 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     @Override
     public List<KbDocument> list() {
+        return list(null);
+    }
+
+    @Override
+    public List<KbDocument> list(Long kbId) {
         // P8-6c：知识库列表只展示用户上传文档（UPLOAD），评测注入的 EVAL 样例不污染管理界面
+        // P9：kbId 非空时限定该库
         return kbDocumentMapper.selectList(new LambdaQueryWrapper<KbDocument>()
                 .eq(KbDocument::getSource, "UPLOAD")
+                .eq(kbId != null, KbDocument::getKbId, kbId)
                 .orderByDesc(KbDocument::getCreatedAt));
     }
 
@@ -346,14 +395,19 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         if (doc == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "文档不存在");
         }
-        // 删除 MinIO 原始文件（幂等，失败不影响主流程）
-        if (doc.getObjectKey() != null && !doc.getObjectKey().isBlank()) {
-            minioStorage.delete(doc.getObjectKey());
-        }
-        cleanupChunksAndVectors(id);
-        kbDocumentMapper.deleteById(id);
-        // P8-7a：知识库内容变化，失效检索缓存
-        retrievalService.invalidateCache();
+        // P9-5a：文件名锁内删除，等待同文件名在途 worker 结束后再清理（可重入，两阶段替换嵌套调用安全）；
+        // 先取消该文档未消费任务（QUEUED/RUNNING→CANCELLED），避免 worker 在删除后又把切片写回
+        kbFilenameLock.runWithLock(doc.getFilename(), () -> {
+            ingestTaskMapper.cancelQueuedByDocument(id);
+            // 删除 MinIO 原始文件（幂等，失败不影响主流程）
+            if (doc.getObjectKey() != null && !doc.getObjectKey().isBlank()) {
+                minioStorage.delete(doc.getObjectKey());
+            }
+            cleanupChunksAndVectors(id);
+            kbDocumentMapper.deleteById(id);
+            // P8-7a：知识库内容变化，失效检索缓存
+            retrievalService.invalidateCache();
+        });
     }
 
     @Override
@@ -367,7 +421,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     }
 
     @Override
-    public KbDocument rechunk(Long id, ChunkParams params) {
+    public KbDocument enqueueRechunk(Long id, ChunkParams params) {
         KbDocument doc = kbDocumentMapper.selectById(id);
         if (doc == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "文档不存在");
@@ -375,20 +429,59 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         if (doc.getObjectKey() == null || doc.getObjectKey().isBlank()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "该文档未保存原始文件，无法重新切片");
         }
-        byte[] bytes = minioStorage.get(doc.getObjectKey());
         // 参数覆盖整体替换：null 字段 = 重置回全局默认
         doc.setChunkMaxChars(params != null ? params.maxChunkChars() : null);
         doc.setChunkOverlapChars(params != null ? params.overlapChars() : null);
         doc.setChunkSemantic(params != null ? params.semantic() : null);
-        kbDocumentMapper.updateById(doc);
-
-        // 清旧切片/向量后按新参数重跑管线
-        cleanupChunksAndVectors(id);
         doc.setStatus("PENDING");
+        doc.setErrorMsg(null);
         doc.setChunkCount(0);
         kbDocumentMapper.updateById(doc);
-        log.info("重新切片文档: {} (id={})", doc.getFilename(), id);
-        return process(doc, bytes);
+        log.info("重新切片文档已入队: {} (id={})", doc.getFilename(), id);
+        enqueue(IngestTask.TYPE_RECHUNK, id);
+        return doc;
+    }
+
+    /**
+     * P9-5a：异步 worker 实际处理。由 {@code ingest_task} 消费线程在文件名锁内调用——
+     * UPLOAD：处理成功后删除旧的同名文档（两阶段替换，失败则旧文档原样保留可检索）；
+     * RECHUNK/RETRY：先清旧切片与向量再重跑。文档已删除返回 null（worker 标记任务跳过）。
+     */
+    @Override
+    public KbDocument processDocument(Long documentId, String taskType) {
+        KbDocument doc = kbDocumentMapper.selectById(documentId);
+        if (doc == null) {
+            return null;
+        }
+        if (doc.getObjectKey() == null || doc.getObjectKey().isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "该文档未保存原始文件，请删除后重新上传");
+        }
+        byte[] bytes = minioStorage.get(doc.getObjectKey());
+
+        // UPLOAD 两阶段替换：取"同名且非自身"的最新旧文档，处理成功后删除（worker 在文件名锁内，串行安全）
+        KbDocument exist = null;
+        if (IngestTask.TYPE_UPLOAD.equals(taskType)) {
+            exist = kbDocumentMapper.selectOne(new LambdaQueryWrapper<KbDocument>()
+                    .eq(KbDocument::getFilename, doc.getFilename())
+                    .ne(KbDocument::getId, doc.getId())
+                    .orderByDesc(KbDocument::getCreatedAt)
+                    .last("LIMIT 1"));
+        }
+        // RECHUNK/RETRY 先清旧切片/向量，避免重跑后数据重复
+        if (IngestTask.TYPE_RETRY.equals(taskType) || IngestTask.TYPE_RECHUNK.equals(taskType)) {
+            cleanupChunksAndVectors(documentId);
+            doc.setChunkCount(0);
+        }
+
+        doc.setStatus("PROCESSING");
+        kbDocumentMapper.updateById(doc);
+        log.info("异步处理文档: {} type={} (id={})", doc.getFilename(), taskType, documentId);
+
+        KbDocument result = process(doc, bytes);
+        if (IngestTask.TYPE_UPLOAD.equals(taskType) && exist != null) {
+            delete(exist.getId()); // 旧文档删除（含 MinIO/切片/向量/缓存失效）
+        }
+        return result;
     }
 
     /** 上传携带的切片参数覆盖写入文档列（仅非 null 字段） */
@@ -456,6 +549,11 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 // Qdrant payload 不支持 Long，雪花 ID 转 String 存储
                 meta.put("documentId", String.valueOf(doc.getId()));
                 meta.put("filename", filename);
+                // P9：写入选库标记（供未来 dense-filter-by-kbid 开启后做 Qdrant 预过滤；
+                // 当前检索靠 DB 后置过滤保证正确性，旧向量无此 payload 也能被后置过滤兼容）
+                if (doc.getKbId() != null) {
+                    meta.put("kbId", String.valueOf(doc.getKbId()));
+                }
                 meta.put("chunkIndex", idx);
                 meta.put("title", chunk.title());
                 // 引用溯源元数据：行号/字符偏移（0 基，半开区间）+ 章节路径 + PDF 页码
@@ -499,6 +597,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
             doc.setChunkCount(toStore.size());
             doc.setStatus("READY");
+            doc.setErrorMsg(null);
             kbDocumentMapper.updateById(doc);
             // P8-7a：知识库内容变化，失效检索缓存，避免命中过期切片
             retrievalService.invalidateCache();
@@ -514,9 +613,15 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             } catch (Exception cleanupEx) {
                 log.warn("失败补偿清理切片/向量失败: {}", cleanupEx.getMessage());
             }
+            // P9-5a：保留原始错误码——BAD_REQUEST(400) 是永久失败（如扫描件无文本），worker 据此直接进 DLQ
+            // 不盲目重试；SYSTEM_ERROR(500) 视为瞬时可重试。errorMsg 供前端 FAILED 徽章展示。
+            String msg = friendlyError(e.getMessage());
             doc.setStatus("FAILED");
+            doc.setErrorMsg(msg);
             kbDocumentMapper.updateById(doc);
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文档处理失败: " + friendlyError(e.getMessage()));
+            int code = e instanceof BusinessException be
+                    ? be.getCode() : ErrorCode.SYSTEM_ERROR.getCode();
+            throw new BusinessException(code, "文档处理失败: " + msg);
         }
     }
 

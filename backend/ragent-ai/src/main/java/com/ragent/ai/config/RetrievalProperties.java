@@ -57,4 +57,9 @@ public class RetrievalProperties {
     /** P8-7a：检索结果缓存 TTL（秒，0=关闭）。避免重复查询每次重跑 ≤9 次检索 + rerank；
      * 文档增删改/重切时主动失效，TTL 仅作兜底。 */
     private int cacheTtlSeconds = 60;
+
+    /** P9：是否在 Qdrant payload 上按 kbId 预过滤稠密检索。默认 false——
+     * 旧向量 payload 无 kbId，预过滤会隐藏所有历史文档；正确性当前靠 DB 后置过滤保证。
+     * 全量重摄入（所有向量都带 kbId payload）后再开启可提升多库场景的稠密召回精准度。 */
+    private boolean denseFilterByKbid = false;
 }
