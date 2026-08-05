@@ -23,6 +23,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    mem_limit: 1g
+    cpus: 2.0
 
   # ===================== 缓存 =====================
   redis:
@@ -38,6 +40,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 256m
+    cpus: 0.5
 
   # ===================== 文件/附件存储 =====================
   minio:
@@ -54,6 +58,14 @@ services:
     volumes:
       - minio-data:/data
     command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    mem_limit: 512m
+    cpus: 1.0
 
   # ===================== 向量库（RAG 核心） =====================
   # Qdrant：轻量向量库，Spring AI 原生支持（Milvus 镜像国内源拉不到，已切换）
@@ -66,6 +78,14 @@ services:
       - "6334:6334"   # gRPC
     volumes:
       - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:6333/healthz | grep -q 'ok' || curl -s http://localhost:6333/ | grep -qi qdrant"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 512m
+    cpus: 1.0
 
   # ===================== 日志体系（ELK） =====================
   elasticsearch:
@@ -86,6 +106,8 @@ services:
       timeout: 10s
       retries: 20
       start_period: 40s
+    mem_limit: 1g
+    cpus: 2.0
 
   logstash:
     image: logstash:8.17.3
@@ -100,6 +122,8 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+    mem_limit: 512m
+    cpus: 1.0
 
   kibana:
     image: kibana:8.17.3
@@ -112,6 +136,8 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+    mem_limit: 512m
+    cpus: 1.0
 
 volumes:
   mysql-data:

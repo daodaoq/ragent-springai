@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS `kb_document` (
   `chunk_semantic`      TINYINT DEFAULT NULL COMMENT '切片参数覆盖: 语义分片(NULL=全局默认)',
   `chunk_count`  INT          NOT NULL DEFAULT 0 COMMENT '切片数',
   `status`       VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '状态: PENDING/READY/FAILED',
+  `source`       VARCHAR(20)  NOT NULL DEFAULT 'UPLOAD' COMMENT '文档来源: UPLOAD/EVAL(评测注入，生产检索排除)',
   `deleted`      TINYINT      NOT NULL DEFAULT 0,
   `created_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -123,6 +124,7 @@ CREATE TABLE IF NOT EXISTS `document_chunk` (
 CREATE TABLE IF NOT EXISTS `ai_feedback` (
   `id`              BIGINT      NOT NULL COMMENT '主键(雪花ID)',
   `user_id`         BIGINT      DEFAULT NULL COMMENT '评价用户(可能未登录)',
+  `trace_id`        VARCHAR(64) DEFAULT NULL COMMENT '全链路traceId(可关联查询日志/ELK定位坏案例)',
   `conversation_id` VARCHAR(64) DEFAULT NULL COMMENT '会话ID',
   `question`        TEXT        COMMENT '用户问题',
   `answer`          MEDIUMTEXT  COMMENT 'AI 回答',
@@ -151,6 +153,7 @@ CREATE TABLE IF NOT EXISTS `kb_query_stage` (
 CREATE TABLE IF NOT EXISTS `rag_query_log` (
   `id`              BIGINT       NOT NULL COMMENT '主键(雪花ID)',
   `user_id`         BIGINT       DEFAULT NULL COMMENT '登录用户ID(未登录为NULL)',
+  `trace_id`        VARCHAR(64)  DEFAULT NULL COMMENT '全链路traceId(与ELK请求日志关联)',
   `conversation_id` VARCHAR(64)  DEFAULT NULL COMMENT '会话ID',
   `question`        TEXT         NOT NULL COMMENT '原始问题',
   `intent`          VARCHAR(20)  DEFAULT NULL COMMENT '意图: RAG/CHAT/OTHER',
@@ -184,3 +187,24 @@ CREATE TABLE IF NOT EXISTS `ai_conversation_summary` (
   UNIQUE KEY `uk_conversation` (`conversation_id`),
   KEY `idx_updated_at` (`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 会话记忆摘要';
+
+-- ============================================
+-- P8-6b: RAG 评测结果（历史对比/回归追踪）
+-- ============================================
+CREATE TABLE IF NOT EXISTS `eval_result` (
+  `id`                BIGINT       NOT NULL COMMENT '主键(雪花ID)',
+  `processed`         TINYINT      NOT NULL DEFAULT 1 COMMENT '是否走查询处理管线(0=原样检索基线)',
+  `with_answer`       TINYINT      NOT NULL DEFAULT 1 COMMENT '是否含回答生成+LLM裁判打分(0=仅检索指标)',
+  `total_cases`       INT          NOT NULL COMMENT '用例数',
+  `recall`            DOUBLE       DEFAULT NULL COMMENT 'Recall@5',
+  `precision`         DOUBLE       DEFAULT NULL COMMENT 'Precision@5',
+  `mrr`               DOUBLE       DEFAULT NULL COMMENT 'MRR@5',
+  `ndcg`              DOUBLE       DEFAULT NULL COMMENT 'NDCG@5',
+  `avg_faithfulness`  DOUBLE       DEFAULT NULL COMMENT '平均忠实度',
+  `avg_relevance`     DOUBLE       DEFAULT NULL COMMENT '平均相关度',
+  `citation_rate`     DOUBLE       DEFAULT NULL COMMENT '引用率',
+  `detail_json`       MEDIUMTEXT   DEFAULT NULL COMMENT '完整评测报告JSON(含逐用例)',
+  `created_at`        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='RAG 评测结果';
