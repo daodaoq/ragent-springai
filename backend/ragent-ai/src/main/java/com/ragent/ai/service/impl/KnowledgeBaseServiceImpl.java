@@ -116,8 +116,8 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
 
         String newHash = sha256Hex(bytes);
-        KbDocument exist = kbDocumentMapper.selectOne(
-                new LambdaQueryWrapper<KbDocument>().eq(KbDocument::getFilename, filename));
+        // P8-8e：同名查找容忍历史重复行（并发批量上传遗留），取最新一条作为"当前"文档
+        KbDocument exist = findLatestByFilename(filename);
         // P8-5b：内容级幂等——同名同内容且已 READY 直接返回，跳过重复切分/向量化
         // （fileHash 此前只算不用，这里让它真正参与变更检测）
         if (exist != null && "READY".equals(exist.getStatus()) && newHash.equals(exist.getFileHash())) {
@@ -238,6 +238,18 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         return msg.length() > 120 ? msg.substring(0, 120) + "…" : msg;
     }
 
+    /**
+     * 按文件名取最新一条文档。用 selectOne + LIMIT 1 而非裸 selectOne：
+     * 历史并发批量上传可能留下多行同名（见 p8_dedup.sql 清理），裸 selectOne 遇多行会抛
+     * TooManyResultsException 使上传直接失败，这里取最新一条作为"当前"文档。
+     */
+    private KbDocument findLatestByFilename(String filename) {
+        return kbDocumentMapper.selectOne(new LambdaQueryWrapper<KbDocument>()
+                .eq(KbDocument::getFilename, filename)
+                .orderByDesc(KbDocument::getCreatedAt)
+                .last("LIMIT 1"));
+    }
+
     /** 文件名清洗：去掉目录路径，仅保留文件名，避免 MinIO key 出现异常层级 */
     private String sanitizeFilename(String filename) {
         String safe = filename.replace('\\', '/');
@@ -247,8 +259,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     @Override
     public KbDocument uploadTextIfAbsent(String filename, String text) {
-        KbDocument exist = kbDocumentMapper.selectOne(
-                new LambdaQueryWrapper<KbDocument>().eq(KbDocument::getFilename, filename));
+        KbDocument exist = findLatestByFilename(filename);
         if (exist != null && "READY".equals(exist.getStatus())) {
             return exist;
         }
